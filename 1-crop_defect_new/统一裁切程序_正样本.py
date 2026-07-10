@@ -404,6 +404,12 @@ def process_single_image(img_name, images_dir, image_index, component_ann_dir, d
             print_with_count(f"❌ 裁切失败 {img_name} 部件 {idx}: {e}")
             continue
 
+        # 如果是RGBA模式，转换为RGB
+        if cropped_img.mode == 'RGBA':
+            rgb_img = Image.new('RGB', cropped_img.size, (255, 255, 255))
+            rgb_img.paste(cropped_img, mask=cropped_img.split()[3])
+            cropped_img = rgb_img
+
         crop_width, crop_height = cropped_img.size
 
         # 生成新文件名
@@ -597,11 +603,11 @@ def main():
   # 方式二：
   #     使用文件夹扫描（不指定--image-index）
 
-  python 统一裁切程序_正样本.py ddx \
+  python 统一裁切程序_正样本.py gt \
     --images-dir /raid/datasets_defect_2026/全图测试集/images \
-    --component-ann /raid/datasets_defect_2026/全图测试集/部件_导地线_xml \
+    --component-ann /raid/datasets_defect_2026/全图测试集/部件_xml \
     --defect-ann /raid/datasets_defect_2026/全图测试集/Annotations \
-    --output /raid/datasets_defect_2026/datasets_val/dx_data_正样本
+    --output /raid/datasets_defect_2026/datasets_val/gt_data/gt_正样本
 
 支持的部件类型: ddx(导地线), gt(杆塔), jyz(绝缘子), gd(挂点)
         """

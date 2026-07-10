@@ -394,6 +394,12 @@ def process_single_image(img_name, images_dir, image_index, component_ann_dir, d
             print_with_count(f"❌ 裁切失败 {img_name} 部件 {idx}: {e}")
             continue
 
+        # 如果是RGBA模式，转换为RGB
+        if cropped_img.mode == 'RGBA':
+            rgb_img = Image.new('RGB', cropped_img.size, (255, 255, 255))
+            rgb_img.paste(cropped_img, mask=cropped_img.split()[3])
+            cropped_img = rgb_img
+
         crop_width, crop_height = cropped_img.size
 
         # 生成新文件名
