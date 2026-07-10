@@ -1,0 +1,233 @@
+# 统一裁切配置文件
+# 支持的部件类型：导地线(ddx)、杆塔(gt)、绝缘子(jyz)、挂点(gd)
+
+# ==================== 导地线配置 ====================
+ddx:
+  # 部件类别
+  component_classes:
+    - ddx
+
+  # 缺陷类别
+  defect_classes:
+    - ddx_sg
+    - ddx_dg
+    - ddx_ss
+    - ddx_yw
+    - ddx_xs
+    - yjs_sg
+    - xjqx
+    - fzc_hycp
+    - fzc_sh
+    - fzc_px
+    - fzc_xs
+    - uxls_sd
+
+  # 面积阈值（缺陷在部件内的占比）
+  overlap_thresholds:
+    ddx_sg: 0.40
+    ddx_dg: 0.20
+    ddx_ss: 0.30
+    ddx_yw: 0.20
+    ddx_xs: 0.40
+    yjs_sg: 0.40
+    xjqx: 0.80
+    fzc_hycp: 0.80
+    fzc_sh: 0.80
+    fzc_px: 0.80
+    fzc_xs: 0.70
+    uxls_sd: 0.80
+
+  # 是否对部件框进行扩充
+  expand_component: false
+
+
+
+# ==================== 杆塔配置 ====================
+gt:
+  # 部件类别
+  component_classes:
+    - gt
+
+  # 缺陷类别
+  defect_classes:
+    - bsp_sh
+    - bsp_twbq
+    - fc
+    - fnc_sh
+    - fnc_wdk
+    - gt_dyjj
+    - gt_qls
+    - gt_tcbx
+    - gt_yw
+    - nc
+    - qnq_sh
+    - xjqx
+
+  # 面积阈值
+  overlap_thresholds:
+    bsp_sh: 0.80
+    bsp_twbq: 0.80
+    fc: 0.50
+    fnc_sh: 0.30
+    fnc_wdk: 0.40
+    gt_dyjj: 0.70
+    gt_qls: 0.80
+    gt_tcbx: 0.50
+    gt_yw: 0.15
+    nc: 0.50
+    qnq_sh: 0.30
+    xjqx: 0.80
+
+  # 是否对部件框进行扩充
+  expand_component: false
+
+
+
+# ==================== 绝缘子配置 ====================
+jyz:
+  # 部件类别
+  component_classes:
+    - bljyz
+    - tcjyz
+    - fhjyz
+    - dxjyz
+    - fwstljyz
+
+  # 缺陷类别
+  defect_classes:
+    - ddx_yw
+    - fdjx_cbtl
+    - fdjx_jxjd
+    - fdjx_jxjx
+    - fhjyz_dhss
+    - fhjyz_sqbx
+    - fhjyz_sqfh
+    - fhjyz_sqps
+    - jyh_azbgf
+    - jyh_qx
+    - jyh_sh
+    - jyh_tl
+    - jyh_zs
+    - jyz_jjxs
+    - jyz_sqzb
+    - tcjyz_dhss
+    - tcjyz_sqps
+    - wtxztc
+    - jyh_qs
+    - lslmqk
+
+  # 面积阈值
+  overlap_thresholds:
+    ddx_yw: 0.20
+    fdjx_cbtl: 0.70
+    fdjx_jxjd: 0.70
+    fdjx_jxjx: 0.70
+    fhjyz_dhss: 0.50
+    fhjyz_sqbx: 0.60
+    fhjyz_sqfh: 0.40
+    fhjyz_sqps: 0.50
+    jyh_azbgf: 0.70
+    jyh_qx: 0.70
+    jyh_sh: 0.70
+    jyh_tl: 0.70
+    jyh_zs: 0.70
+    jyz_jjxs: 0.50
+    jyz_sqzb: 0.60
+    tcjyz_dhss: 0.50
+    tcjyz_sqps: 0.50
+    wtxztc: 0.80
+    jyh_qs: 0.80
+    lslmqk: 0.80
+
+  # 是否对部件框进行扩充（绝缘子需要扩充）
+  expand_component: true
+  expand_long_ratio: 0.35  # 长边扩充比例（长边两端各扩充35%）
+  expand_short_ratio: 0.45  # 短边扩充比例（短边两端各扩充45%）
+
+
+
+# ==================== 挂点配置 ====================
+gd:
+  # 部件类别
+  component_classes:
+    - jyzx
+    - jyzt
+    - xjt
+    - xcxj
+    - nzxj
+    - bgxj
+
+  # 缺陷类别（最终类别，已经过映射）
+  defect_classes:
+    - xzazbgf
+    - xztc
+    - lsqlm
+    - lsqbm
+    - lslmqk
+    - jjqls
+    - xjjxs
+    - xcxj_lslybz
+    - xcxj_dpbp
+    - lsqdp
+    - wtxztc
+    - ddx_yw
+    - uxls_sd
+    - lsqxz
+    - uxls_xs
+    - uxgh_xs
+    - qtgh_xs
+    - wtgb_xs
+    - lb_xs
+    - zjgb_xs
+
+  # 面积阈值
+  overlap_thresholds:
+    xzazbgf: 0.90
+    xztc: 0.90
+    lsqlm: 1.00
+    lsqbm: 1.00
+    lslmqk: 1.00
+    jjqls: 0.80
+    xjjxs: 0.80
+    xcxj_lslybz: 1.00
+    xcxj_dpbp: 0.80
+    lsqdp: 0.80
+    wtxztc: 0.70
+    ddx_yw: 0.40
+    uxls_sd: 0.80
+    lsqxz: 0.80
+    uxls_xs: 0.60
+    uxgh_xs: 0.60
+    qtgh_xs: 0.60
+    wtgb_xs: 0.60
+    lb_xs: 0.60
+    zjgb_xs: 0.60
+
+  # 是否对部件框进行扩充（挂点需要扩充）
+  expand_component: true
+  expand_long_ratio: 0.2  # 长边扩充比例（长边两端各扩充20%）
+  expand_short_ratio: 0.2  # 短边扩充比例（短边两端各扩充20%）
+
+  # 类别映射（原始类别 -> 最终类别）
+  class_mapping:
+    xcxj_lsqlm: lsqlm
+    lmsd: lslmqk
+    xjjsd: lslmqk
+    gt_bmqk: lslmqk
+    xcxj_qls: jjqls
+    xdxs: xjjxs
+    lmxs: xjjxs
+    xcxj_lsqdp: lsqdp
+    nzxj_lsqdp: lsqdp
+    dxjj_lsqdp: lsqdp
+
+
+
+
+# ==================== 其余全局配置（目前都无关） ====================
+global:
+  # 默认面积阈值（未配置的类别使用）
+  default_threshold: 0.80
+
+  # 负样本比例（可选，暂未实现）
+  negative_sample_ratio: 0.0
