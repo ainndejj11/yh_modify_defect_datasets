@@ -2,7 +2,7 @@
 
 # yh_modify_defect_datasets
 
-缺陷识别数据集构建的相关代码
+缺陷识别数据集构建的相关代码：
 
 1、总库裁切缺陷子图
 
@@ -39,7 +39,7 @@
   "original_img_path": "原图完整路径",
   "original_defect_xml": "原图对应的缺陷XML文件名",
   "part_bbox": "[xmin, ymin, xmax, ymax]",
-  "defects_at_crop_time": [],
-  "is_negative_sample": true
+  "defects_at_crop_time": "裁切时保留的所有缺陷详细信息；负样本没缺陷（默认空列表）",
+  "is_negative_sample": "true,标识这是个负样本（正样本没有此参数）"
 }
 ```
