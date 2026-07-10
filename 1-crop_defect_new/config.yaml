@@ -224,8 +224,45 @@ gd:
 
 
 
-# ==================== 其余全局配置（目前都无关） ====================
+# ==================== 全局缺陷配置 ====================
 global:
+  # 全局缺陷不需要部件类别
+  component_classes: []
+
+  # 全局缺陷类别
+  defect_classes:
+    - gt_yw
+    - ddx_dg
+    - ddx_sg
+    - ddx_yw
+    - ddx_ss
+    - ddx_xs
+    - fzc_px
+    - fzc_hy
+    - fzc_sh
+    - xjqx
+    - nc
+    - fc
+    - gt_dyjj
+    - jyh_azbgf
+    - jyh_qx
+    - jyh_sh
+    - jyh_tl
+    - jyh_zs
+    - jyh_qs
+
+  # 全局缺陷不需要面积阈值（不做裁切）
+  overlap_thresholds: {}
+
+  # 全局缺陷不做扩充
+  expand_component: false
+
+  # 类别映射（如果需要）
+  class_mapping: {}
+
+
+# ==================== 其余全局配置（目前都无关） ====================
+global_settings:
   # 默认面积阈值（未配置的类别使用）
   default_threshold: 0.80
 

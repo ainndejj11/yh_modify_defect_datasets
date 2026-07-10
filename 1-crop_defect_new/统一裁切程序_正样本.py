@@ -11,6 +11,7 @@ from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor
 import threading
 from tqdm import tqdm
+import shutil
 
 
 '''
@@ -66,12 +67,12 @@ def load_config(config_path):
 
     # 解析各部件配置
     component_configs = {}
-    for component_type in ['ddx', 'gt', 'jyz', 'gd']:
+    for component_type in ['ddx', 'gt', 'jyz', 'gd', 'global']:
         if component_type in config:
             component_configs[component_type] = ComponentConfig(config[component_type])
 
     # 全局配置
-    global_config = config.get('global', {})
+    global_config = config.get('global_settings', {})
     default_threshold = global_config.get('default_threshold', 0.80)
 
     return component_configs, default_threshold
@@ -293,6 +294,95 @@ def create_xml(filename, width, height, objects, save_path):
 
 # ==================== 处理单张图片 ====================
 
+def process_single_image_global(img_name, images_dir, image_index, defect_ann_dir, out_dir,
+                                config, use_pkl_index):
+    """
+    处理单张图片的全局缺陷（不裁切，只筛选类别）
+    config: ComponentConfig 对象
+    defect_ann_dir: 缺陷标注XML目录
+    use_pkl_index: 是否使用pkl索引（True=使用pkl，False=使用文件夹扫描）
+    """
+    # 获取原图路径
+    img_path = image_index.get(img_name)
+    if not img_path:
+        print_with_count(f"⚠️  图片 {img_name} 未在索引中找到，跳过")
+        return None
+
+    # 根据索引方式处理路径
+    if use_pkl_index:
+        # pkl索引方式：img_path是相对路径，需要拼接
+        full_img_path = os.path.join(images_dir, img_path)
+    else:
+        # 文件夹扫描方式：img_path已经是完整路径
+        full_img_path = img_path
+
+    if not os.path.exists(full_img_path):
+        print_with_count(f"⚠️  图片文件不存在: {full_img_path}，跳过")
+        return None
+
+    # 解析缺陷XML
+    xml_name = os.path.splitext(img_name)[0] + '.xml'
+    xml_path = os.path.join(defect_ann_dir, xml_name)
+
+    if not os.path.exists(xml_path):
+        print_with_count(f"⚠️  缺陷XML不存在: {xml_path}，跳过")
+        return None
+
+    # 获取所有缺陷
+    all_defects = get_objects_from_xml(xml_path, config.defect_classes)
+
+    # 应用类别映射（如果有）
+    if config.class_mapping:
+        for defect in all_defects:
+            if defect['name'] in config.class_mapping:
+                defect['name'] = config.class_mapping[defect['name']]
+
+    # 正样本模式：如果没有目标类别缺陷，跳过（只保留有缺陷的图片）
+    if not all_defects:
+        return None
+
+    # 打开原图获取尺寸
+    try:
+        img = Image.open(full_img_path)
+        img_width, img_height = img.size
+    except Exception as e:
+        print_with_count(f"❌ 打开图片失败 {full_img_path}: {e}")
+        return None
+
+    # 复制图片到输出目录
+    out_img_path = os.path.join(out_dir, "images", img_name)
+    os.makedirs(os.path.dirname(out_img_path), exist_ok=True)
+
+    try:
+        shutil.copy2(full_img_path, out_img_path)
+    except Exception as e:
+        print_with_count(f"❌ 复制图片失败 {img_name}: {e}")
+        return None
+
+    # 创建过滤后的XML（只保留目标类别）
+    xml_objects = [{'name': d['name'], 'bbox': d['bbox']} for d in all_defects]
+    out_xml_path = os.path.join(out_dir, "Annotations", xml_name)
+    os.makedirs(os.path.dirname(out_xml_path), exist_ok=True)
+    create_xml(img_name, img_width, img_height, xml_objects, out_xml_path)
+
+    # 记录全局缺陷信息
+    defects_info = []
+    for d in all_defects:
+        defects_info.append({
+            'name': d['name'],
+            'bbox': list(d['bbox'])
+        })
+
+    mapping_info = {
+        'original_img_path': full_img_path if not use_pkl_index else img_path,
+        'original_defect_xml': xml_name,
+        'is_global': True,  # 标记为全局缺陷
+        'defects': defects_info
+    }
+
+    return (xml_name, mapping_info)
+
+
 def process_single_image(img_name, images_dir, image_index, component_ann_dir, defect_ann_dir, out_dir,
                          config, default_threshold, use_pkl_index):
     """
@@ -456,11 +546,11 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
                       component_type, config_path, max_workers=24):
     """
     多线程批量处理图片
-    component_type: 部件类型，如 'ddx', 'gt', 'jyz', 'gd'
+    component_type: 部件类型，如 'ddx', 'gt', 'jyz', 'gd', 'global'
     config_path: 配置文件路径
     images_dir: 原图目录
     image_pkl_path: 图片索引文件（可选，None时使用文件夹扫描）
-    component_ann_dir: 部件检测XML目录
+    component_ann_dir: 部件检测XML目录（global类型时可为None）
     defect_ann_dir: 缺陷标注XML目录
     out_dir: 输出目录
     """
@@ -478,16 +568,25 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
 
     config = component_configs[component_type]
 
+    # 判断是否为全局缺陷模式
+    is_global = (component_type == 'global')
+
     print(f"\n📋 配置信息:")
-    print(f"  部件类别: {', '.join(config.component_classes)}")
-    print(f"  缺陷类别数: {len(config.defect_classes)}")
-    print(f"  面积阈值配置数: {len(config.overlap_thresholds)}")
-    print(f"  扩充部件框: {'是' if config.expand_component else '否'}")
-    if config.expand_component:
-        print(f"  扩充比例: 长边={config.expand_long_ratio}, 短边={config.expand_short_ratio}")
-    if config.class_mapping:
-        print(f"  类别映射数: {len(config.class_mapping)}")
-    print(f"  模式: 仅正样本（跳过无缺陷的裁切）")
+    if is_global:
+        print(f"  处理模式: 全局缺陷（不裁切）")
+        print(f"  缺陷类别数: {len(config.defect_classes)}")
+        if config.class_mapping:
+            print(f"  类别映射数: {len(config.class_mapping)}")
+    else:
+        print(f"  部件类别: {', '.join(config.component_classes)}")
+        print(f"  缺陷类别数: {len(config.defect_classes)}")
+        print(f"  面积阈值配置数: {len(config.overlap_thresholds)}")
+        print(f"  扩充部件框: {'是' if config.expand_component else '否'}")
+        if config.expand_component:
+            print(f"  扩充比例: 长边={config.expand_long_ratio}, 短边={config.expand_short_ratio}")
+        if config.class_mapping:
+            print(f"  类别映射数: {len(config.class_mapping)}")
+        print(f"  模式: 仅正样本（跳过无缺陷的裁切）")
     print()
 
     # 根据是否提供pkl文件选择索引方式
@@ -501,8 +600,14 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
         image_index = build_image_index(images_dir)
 
     # 获取所有XML文件
-    xml_files = [f for f in os.listdir(component_ann_dir) if f.endswith('.xml')]
-    print(f"📁 找到 {len(xml_files)} 个部件XML文件\n")
+    if is_global:
+        # 全局模式：从缺陷XML目录获取
+        xml_files = [f for f in os.listdir(defect_ann_dir) if f.endswith('.xml')]
+        print(f"📁 找到 {len(xml_files)} 个缺陷XML文件\n")
+    else:
+        # 部件模式：从部件XML目录获取
+        xml_files = [f for f in os.listdir(component_ann_dir) if f.endswith('.xml')]
+        print(f"📁 找到 {len(xml_files)} 个部件XML文件\n")
 
     # 创建输出目录
     os.makedirs(os.path.join(out_dir, "images"), exist_ok=True)
@@ -536,17 +641,31 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
                 print_with_count(f"⚠️  XML文件 {xml_file} 没有找到对应的图片，跳过")
                 continue
 
-            future = executor.submit(
-                process_single_image,
-                img_name, images_dir, image_index, component_ann_dir, defect_ann_dir, out_dir,
-                config, default_threshold, use_pkl_index
-            )
+            # 根据模式选择处理函数
+            if is_global:
+                future = executor.submit(
+                    process_single_image_global,
+                    img_name, images_dir, image_index, defect_ann_dir, out_dir,
+                    config, use_pkl_index
+                )
+            else:
+                future = executor.submit(
+                    process_single_image,
+                    img_name, images_dir, image_index, component_ann_dir, defect_ann_dir, out_dir,
+                    config, default_threshold, use_pkl_index
+                )
             futures.append(future)
 
         # 使用进度条
         for future in tqdm(futures, desc="处理进度", unit="img"):
-            results = future.result()
-            all_crop_info.extend(results)
+            result = future.result()
+            if is_global:
+                # 全局模式返回单个结果
+                if result:
+                    all_crop_info.append(result)
+            else:
+                # 部件模式返回列表
+                all_crop_info.extend(result)
 
     # 保存裁切映射信息到JSON
     crop_mapping = {}
@@ -562,8 +681,10 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
     print("\n" + "=" * 70)
     print("📊 裁切统计")
     print("=" * 70)
-    print(f"  正样本（包含缺陷）: {len(crop_mapping)} 个")
-    print(f"  总计: {len(crop_mapping)} 个子图")
+    if is_global:
+        print(f"  全局缺陷图片: {len(crop_mapping)} 张")
+    else:
+        print(f"  正样本（包含缺陷）总计: {len(crop_mapping)} 个子图")
     print("=" * 70)
 
     print("\n" + "=" * 70)
@@ -590,7 +711,7 @@ def main():
         epilog="""
 使用示例:
   # 方式一：
-  #     使用pkl索引文件
+  #     使用pkl索引文件（部件裁切）
 
   python 统一裁切程序_正样本.py ddx \
     --images-dir /path/to/JPEGImages \
@@ -599,24 +720,34 @@ def main():
     --defect-ann /path/to/Annotations \
     --output /path/to/output_ddx
 
-    
-  # 方式二：
-  #     使用文件夹扫描（不指定--image-index）
 
-  python 统一裁切程序_正样本.py gt \
+  # 方式二：
+  #     使用文件夹扫描（部件裁切）
+
+  python 统一裁切程序_正样本.py jyz \
     --images-dir /raid/datasets_defect_2026/全图测试集/images \
     --component-ann /raid/datasets_defect_2026/全图测试集/部件_xml \
     --defect-ann /raid/datasets_defect_2026/全图测试集/Annotations \
-    --output /raid/datasets_defect_2026/datasets_val/gt_data/gt_正样本
+    --output /raid/datasets_defect_2026/datasets_val/jyz_data/jyz_正样本
 
-支持的部件类型: ddx(导地线), gt(杆塔), jyz(绝缘子), gd(挂点)
+
+  # 方式三：
+  #     全局缺陷（不裁切，只筛选类别）
+
+  python 统一裁切程序_正样本.py global \
+    --images-dir /path/to/JPEGImages \
+    --image-index /path/to/image_index.pkl \
+    --defect-ann /path/to/Annotations \
+    --output /path/to/output_global
+
+支持的部件类型: ddx(导地线), gt(杆塔), jyz(绝缘子), gd(挂点), global(全局缺陷)
         """
     )
 
     parser.add_argument(
         'component_type',
-        choices=['ddx', 'gt', 'jyz', 'gd'],
-        help='部件类型: ddx(导地线), gt(杆塔), jyz(绝缘子), gd(挂点)'
+        choices=['ddx', 'gt', 'jyz', 'gd', 'global'],
+        help='部件类型: ddx(导地线), gt(杆塔), jyz(绝缘子), gd(挂点), global(全局缺陷)'
     )
 
     parser.add_argument(
@@ -634,8 +765,9 @@ def main():
 
     parser.add_argument(
         '--component-ann',
-        required=True,
-        help='部件检测XML目录路径'
+        required=False,
+        default=None,
+        help='部件检测XML目录路径（global类型时不需要）'
     )
 
     parser.add_argument(
@@ -660,7 +792,7 @@ def main():
         '--workers',
         type=int,
         default=20,
-        help='线程数 (默认: 24)'
+        help='线程数 (默认: 20)'
     )
 
     args = parser.parse_args()
@@ -674,9 +806,14 @@ def main():
         print(f"❌ 错误: 图片索引文件不存在: {args.image_index}")
         sys.exit(1)
 
-    if not os.path.exists(args.component_ann):
-        print(f"❌ 错误: 部件检测XML目录不存在: {args.component_ann}")
-        sys.exit(1)
+    # 如果不是global模式，必须提供component-ann
+    if args.component_type != 'global':
+        if not args.component_ann:
+            print(f"❌ 错误: 非global模式必须提供 --component-ann 参数")
+            sys.exit(1)
+        if not os.path.exists(args.component_ann):
+            print(f"❌ 错误: 部件检测XML目录不存在: {args.component_ann}")
+            sys.exit(1)
 
     if not os.path.exists(args.defect_ann):
         print(f"❌ 错误: 缺陷标注XML目录不存在: {args.defect_ann}")
@@ -696,12 +833,16 @@ def main():
         print(f"  图片索引: {args.image_index} (pkl索引方式)")
     else:
         print(f"  图片索引: 文件夹扫描方式")
-    print(f"  部件XML目录: {args.component_ann}")
+    if args.component_type != 'global':
+        print(f"  部件XML目录: {args.component_ann}")
     print(f"  缺陷XML目录: {args.defect_ann}")
     print(f"  输出目录: {args.output}")
     print(f"  配置文件: {args.config}")
     print(f"  线程数: {args.workers}")
-    print(f"  模式: 仅正样本")
+    if args.component_type == 'global':
+        print(f"  模式: 全局缺陷（不裁切）")
+    else:
+        print(f"  模式: 仅正样本")
     print("=" * 70 + "\n")
 
     # 执行裁切
