@@ -713,22 +713,23 @@ def main():
   # 方式一：
   #     使用pkl索引文件（部件裁切）
 
-  python 统一裁切程序_正样本.py ddx \
-    --images-dir /path/to/JPEGImages \
-    --image-index /path/to/image_index.pkl \
-    --component-ann /path/to/导地线检测xml结果 \
-    --defect-ann /path/to/Annotations \
-    --output /path/to/output_ddx
+  nohup python 统一裁切程序_正样本.py gd \
+    --images-dir /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/JPEGImages \
+    --image-index /raid/wtj/ultralytics-8.4.6/缺陷识别-模型优化v7.0/1-总库图像进行部件检测/image_indexs_20260114.pkl \
+    --component-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/部件xmls \
+    --defect-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/Annotations \
+    --output /raid/datasets_defect_2026/datasets_train/全量_正样本/gd_data \
+    > inference.log 2>&1 &
 
 
   # 方式二：
   #     使用文件夹扫描（部件裁切）
 
-  python 统一裁切程序_正样本.py jyz \
+  python 统一裁切程序_正样本.py gd \
     --images-dir /raid/datasets_defect_2026/全图测试集/images \
     --component-ann /raid/datasets_defect_2026/全图测试集/部件_xml \
     --defect-ann /raid/datasets_defect_2026/全图测试集/Annotations \
-    --output /raid/datasets_defect_2026/datasets_val/jyz_data/jyz_正样本
+    --output /raid/datasets_defect_2026/datasets_val/gd_data/gd_正样本
 
 
   # 方式三：
@@ -791,7 +792,7 @@ def main():
     parser.add_argument(
         '--workers',
         type=int,
-        default=20,
+        default=30,
         help='线程数 (默认: 20)'
     )
 
