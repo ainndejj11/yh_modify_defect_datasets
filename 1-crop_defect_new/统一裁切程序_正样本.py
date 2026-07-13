@@ -13,6 +13,8 @@ import threading
 from tqdm import tqdm
 import shutil
 
+from defect_coverage_analyzer import analyze_single_image, generate_summary_report
+
 
 '''
 本版本为 仅裁切正样本（跳过负样本）
@@ -257,6 +259,22 @@ def get_objects_from_xml(xml_path, target_classes=None):
         print_with_count(f"❌ 解析XML文件失败 {xml_path}: {e}")
     return objs
 
+def _indent_xml(elem, level=0):
+    """兼容 Python 3.8 的 XML 缩进辅助函数"""
+    i = "\n" + level * "  "
+    if len(elem):
+        if not elem.text or not elem.text.strip():
+            elem.text = i + "  "
+        if not elem.tail or not elem.tail.strip():
+            elem.tail = i
+        for child in elem:
+            _indent_xml(child, level + 1)
+            if not child.tail or not child.tail.strip():
+                child.tail = i
+    else:
+        if level and (not elem.tail or not elem.tail.strip()):
+            elem.tail = i
+
 def create_xml(filename, width, height, objects, save_path):
     """
     创建VOC格式的XML文件
@@ -289,7 +307,10 @@ def create_xml(filename, width, height, objects, save_path):
 
     # 保存XML文件
     tree = ET.ElementTree(root)
-    ET.indent(tree, space='  ')
+    if hasattr(ET, 'indent'):
+        ET.indent(tree, space='  ')
+    else:
+        _indent_xml(root)
     tree.write(save_path, encoding='utf-8', xml_declaration=True)
 
 # ==================== 处理单张图片 ====================
@@ -538,7 +559,23 @@ def process_single_image(img_name, images_dir, image_index, component_ann_dir, d
         }
         crop_results.append((new_xml_name, crop_info))
 
-    return crop_results
+    # ==================== 漏裁分析 ====================
+    crop_info_list = [info for _, info in crop_results]
+    missed_defects = analyze_single_image(
+        img_name=img_name,
+        all_defects=all_defects,
+        components=components,
+        crop_info_list=crop_info_list,
+        config=config,
+        default_threshold=default_threshold,
+        img_width=img_width,
+        img_height=img_height
+    )
+    # 填充原图路径
+    for d in missed_defects:
+        d['original_img_path'] = full_img_path if not use_pkl_index else img_path
+
+    return crop_results, missed_defects, len(all_defects)
 
 # ==================== 多线程处理 ====================
 
@@ -615,6 +652,10 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
 
     # 多线程处理
     all_crop_info = []
+    all_missed_defects = []
+    total_defects_analyzed = 0
+    missed_lock = threading.Lock()
+    defects_count_lock = threading.Lock()
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
@@ -658,14 +699,19 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
 
         # 使用进度条
         for future in tqdm(futures, desc="处理进度", unit="img"):
-            result = future.result()
             if is_global:
                 # 全局模式返回单个结果
+                result = future.result()
                 if result:
                     all_crop_info.append(result)
             else:
-                # 部件模式返回列表
-                all_crop_info.extend(result)
+                # 部件模式返回列表 + 漏裁信息
+                crop_results, missed_defects, n_defects = future.result()
+                all_crop_info.extend(crop_results)
+                with missed_lock:
+                    all_missed_defects.extend(missed_defects)
+                with defects_count_lock:
+                    total_defects_analyzed += n_defects
 
     # 保存裁切映射信息到JSON
     crop_mapping = {}
@@ -700,6 +746,21 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
         print(f"  总计: {total_clipped} 个缺陷bbox被裁切")
     else:
         print("  无缺陷bbox被裁切")
+    print("=" * 70)
+
+    # 生成漏裁统计报告
+    print("\n" + "=" * 70)
+    print("📊 漏裁缺陷统计")
+    print("=" * 70)
+    report_path = os.path.join(out_dir, "漏裁统计报告.txt")
+    report_text = generate_summary_report(
+        all_missed_defects,
+        report_path,
+        total_defects=total_defects_analyzed,
+        total_images=len(xml_files)
+    )
+    print(report_text)
+    print(f"📄 漏裁统计报告已保存: {report_path}")
     print("=" * 70)
 
 # ==================== 主程序入口 ====================
