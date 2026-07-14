@@ -226,8 +226,10 @@ gd:
 
 # ==================== 基础类配置 ====================
 jc:
+  # 基础类缺陷不需要部件类别
   component_classes: []
 
+  # 基础缺陷类别
   defect_classes:
     - tjwl
     - tjbm
@@ -239,10 +241,13 @@ jc:
     - tjxx
     - jd_lsqs
 
+  # 基础缺陷不需要面积阈值（不做裁切）
   overlap_thresholds: {}
 
+  # 基础缺陷不做扩充
   expand_component: false
 
+  # 类别映射（如果需要）
   class_mapping: {}
 
 
