@@ -224,6 +224,29 @@ gd:
 
 
 
+# ==================== 基础类配置 ====================
+jc:
+  component_classes: []
+
+  defect_classes:
+    - tjwl
+    - tjbm
+    - jd_yxxdk
+    - jd_jdtwl
+    - tjzw
+    - tjjs
+    - tjsh
+    - tjxx
+    - jd_lsqs
+
+  overlap_thresholds: {}
+
+  expand_component: false
+
+  class_mapping: {}
+
+
+
 # ==================== 全局缺陷配置 ====================
 global:
   # 全局缺陷不需要部件类别

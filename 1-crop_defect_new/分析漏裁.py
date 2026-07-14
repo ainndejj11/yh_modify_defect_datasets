@@ -39,19 +39,22 @@ def main():
         epilog="""
 使用示例:
   # 完整分析（含可视化）
-  python 分析漏裁.py ddx \\
-    --images-dir /path/to/JPEGImages \\
-    --component-ann /path/to/部件_导地线_xml \\
-    --defect-ann /path/to/Annotations \\
-    --output /path/to/output_ddx \\
+  python 分析漏裁.py ddx \
+    --images-dir /raid/datasets_defect_2026/全图测试集/images \
+    --component-ann /raid/datasets_defect_2026/全图测试集/部件_导地线_xml\
+    --defect-ann /raid/datasets_defect_2026/全图测试集/Annotations  \
+    --crop-mapping /raid/datasets_defect_2026/datasets_val/全量_正样本/dx_data/crop_mapping_正样本.json \
+    --output /raid/datasets_defect_2026/全图测试集/测试wtj \
     --viz
 
+    
   # 只输出报告，不生成可视化（可省略 --images-dir）
   python 分析漏裁.py ddx \\
     --component-ann /path/to/部件_导地线_xml \\
     --defect-ann /path/to/Annotations \\
     --output /path/to/output_ddx
 
+    
   # 显式指定 crop_mapping
   python 分析漏裁.py ddx \\
     --component-ann /path/to/部件_导地线_xml \\

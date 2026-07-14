@@ -82,7 +82,7 @@ def load_config(config_path):
 
     # 解析各部件配置
     component_configs = {}
-    for component_type in ['ddx', 'gt', 'jyz', 'gd', 'global']:
+    for component_type in ['ddx', 'gt', 'jyz', 'gd', 'global', 'jc']:
         if component_type in config:
             component_configs[component_type] = ComponentConfig(config[component_type])
 
@@ -287,7 +287,10 @@ def create_xml(filename, width, height, objects, save_path):
 
     # 保存XML文件
     tree = ET.ElementTree(root)
-    ET.indent(tree, space='  ')
+    if hasattr(ET, 'indent'):
+        ET.indent(tree, space='  ')
+    else:
+        _indent_xml(root)
     tree.write(save_path, encoding='utf-8', xml_declaration=True)
 
 # ==================== 处理单张图片 ====================
@@ -548,7 +551,7 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
     config = component_configs[component_type]
 
     # 判断是否为全局负样本模式
-    is_global = (component_type == 'global')
+    is_global = (component_type in ('global', 'jc'))
 
     print(f"\n📋 配置信息:")
     if is_global:
@@ -644,11 +647,9 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
                     result = future.result()
                     if result:
                         if is_global:
-                            # 全局模式返回单个结果
                             all_crop_info.append(result)
                             pbar.update(1)
                         else:
-                            # 部件模式返回列表
                             all_crop_info.extend(result)
                             pbar.update(len(result))
                         completed_count += 1
@@ -728,8 +729,8 @@ def main():
 
     parser.add_argument(
         'component_type',
-        choices=['ddx', 'gt', 'jyz', 'gd', 'global'],
-        help='部件类型: ddx(导地线), gt(杆塔), jyz(绝缘子), gd(挂点), global(全局负样本)'
+        choices=['ddx', 'gt', 'jyz', 'gd', 'global', 'jc'],
+        help='部件类型: ddx(导地线), gt(杆塔), jyz(绝缘子), gd(挂点), global(全局负样本), jc(基础类)'
     )
 
     parser.add_argument(
@@ -796,7 +797,7 @@ def main():
         sys.exit(1)
 
     # 如果不是global模式，必须提供component-ann
-    if args.component_type != 'global':
+    if args.component_type not in ('global', 'jc'):
         if not args.component_ann:
             print(f"❌ 错误: 非global模式必须提供 --component-ann 参数")
             sys.exit(1)
@@ -826,7 +827,7 @@ def main():
         print(f"  图片索引: {args.image_index} (pkl模式)")
     else:
         print(f"  图片索引: 从原图目录扫描 (文件夹模式)")
-    if args.component_type != 'global':
+    if args.component_type not in ('global', 'jc'):
         print(f"  部件XML目录: {args.component_ann}")
     print(f"  缺陷XML目录: {args.defect_ann}")
     print(f"  输出目录: {args.output}")

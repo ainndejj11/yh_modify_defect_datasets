@@ -45,11 +45,11 @@ def load_config(config_path):
         config = yaml.safe_load(f)
 
     component_configs = {}
-    for component_type in ['ddx', 'gt', 'jyz', 'gd']:
+    for component_type in ['ddx', 'gt', 'jyz', 'gd', 'global', 'jc']:
         if component_type in config:
             component_configs[component_type] = ComponentConfig(config[component_type])
 
-    global_config = config.get('global', {})
+    global_config = config.get('global_settings', {})
     default_threshold = global_config.get('default_threshold', 0.80)
 
     return component_configs, default_threshold

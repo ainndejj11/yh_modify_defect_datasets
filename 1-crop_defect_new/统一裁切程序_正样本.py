@@ -69,7 +69,7 @@ def load_config(config_path):
 
     # 解析各部件配置
     component_configs = {}
-    for component_type in ['ddx', 'gt', 'jyz', 'gd', 'global']:
+    for component_type in ['ddx', 'gt', 'jyz', 'gd', 'global', 'jc']:
         if component_type in config:
             component_configs[component_type] = ComponentConfig(config[component_type])
 
@@ -606,7 +606,7 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
     config = component_configs[component_type]
 
     # 判断是否为全局缺陷模式
-    is_global = (component_type == 'global')
+    is_global = (component_type in ('global', 'jc'))
 
     print(f"\n📋 配置信息:")
     if is_global:
@@ -699,19 +699,20 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
 
         # 使用进度条
         for future in tqdm(futures, desc="处理进度", unit="img"):
-            if is_global:
-                # 全局模式返回单个结果
-                result = future.result()
-                if result:
-                    all_crop_info.append(result)
-            else:
-                # 部件模式返回列表 + 漏裁信息
-                crop_results, missed_defects, n_defects = future.result()
-                all_crop_info.extend(crop_results)
-                with missed_lock:
-                    all_missed_defects.extend(missed_defects)
-                with defects_count_lock:
-                    total_defects_analyzed += n_defects
+            try:
+                if is_global:
+                    result = future.result()
+                    if result:
+                        all_crop_info.append(result)
+                else:
+                    crop_results, missed_defects, n_defects = future.result()
+                    all_crop_info.extend(crop_results)
+                    with missed_lock:
+                        all_missed_defects.extend(missed_defects)
+                    with defects_count_lock:
+                        total_defects_analyzed += n_defects
+            except Exception as e:
+                print_with_count(f"⚠️  处理任务时出错: {e}")
 
     # 保存裁切映射信息到JSON
     crop_mapping = {}
@@ -770,46 +771,45 @@ def main():
         description='部件缺陷数据集裁切工具（仅正样本）- 支持pkl索引和文件夹扫描两种方式',
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
-使用示例:
-  # 方式一：
-  #     使用pkl索引文件（部件裁切）
+    使用示例:
+    # 方式一：
+    #     使用pkl索引文件（部件裁切）
 
-  nohup python 统一裁切程序_正样本.py gd \
-    --images-dir /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/JPEGImages \
-    --image-index /raid/wtj/ultralytics-8.4.6/缺陷识别-模型优化v7.0/1-总库图像进行部件检测/image_indexs_20260114.pkl \
-    --component-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/部件xmls \
-    --defect-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/Annotations \
-    --output /raid/datasets_defect_2026/datasets_train/全量_正样本/gd_data \
-    > inference.log 2>&1 &
-
-
-  # 方式二：
-  #     使用文件夹扫描（部件裁切）
-
-  python 统一裁切程序_正样本.py gd \
-    --images-dir /raid/datasets_defect_2026/全图测试集/images \
-    --component-ann /raid/datasets_defect_2026/全图测试集/部件_xml \
-    --defect-ann /raid/datasets_defect_2026/全图测试集/Annotations \
-    --output /raid/datasets_defect_2026/datasets_val/gd_data/gd_正样本
+    nohup python 统一裁切程序_正样本.py gd \
+        --images-dir /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/JPEGImages \
+        --image-index /raid/wtj/ultralytics-8.4.6/缺陷识别-模型优化v7.0/1-总库图像进行部件检测/image_indexs_20260114.pkl \
+        --component-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/部件xmls \
+        --defect-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/Annotations \
+        --output /raid/datasets_defect_2026/datasets_train/全量_正样本/gd_data \
+        > inference.log 2>&1 &
 
 
-  # 方式三：
-  #     全局缺陷（不裁切，只筛选类别）
+    # 方式二：
+    #     使用文件夹扫描（部件裁切）
 
-  python 统一裁切程序_正样本.py global \
-    --images-dir /path/to/JPEGImages \
-    --image-index /path/to/image_index.pkl \
-    --defect-ann /path/to/Annotations \
-    --output /path/to/output_global
+    python 统一裁切程序_正样本.py gd \
+        --images-dir /raid/datasets_defect_2026/全图测试集/images \
+        --component-ann /raid/datasets_defect_2026/全图测试集/部件_xml \
+        --defect-ann /raid/datasets_defect_2026/全图测试集/Annotations \
+        --output /raid/datasets_defect_2026/datasets_val/gd_data/gd_正样本
 
-支持的部件类型: ddx(导地线), gt(杆塔), jyz(绝缘子), gd(挂点), global(全局缺陷)
+
+    # 方式三：
+    #     全局缺陷、基础缺陷（不裁切，只筛选类别）
+
+    python 统一裁切程序_正样本.py jc \
+        --images-dir /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/JPEGImages \
+        --image-index /raid/wtj/ultralytics-8.4.6/缺陷识别-模型优化v7.0/1-总库图像进行部件检测/image_indexs_20260114.pkl \
+        --defect-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/Annotations \
+        --output /raid/datasets_defect_2026/datasets_train/全量_正样本/jc_data
+
         """
     )
 
     parser.add_argument(
         'component_type',
-        choices=['ddx', 'gt', 'jyz', 'gd', 'global'],
-        help='部件类型: ddx(导地线), gt(杆塔), jyz(绝缘子), gd(挂点), global(全局缺陷)'
+        choices=['ddx', 'gt', 'jyz', 'gd', 'global', 'jc'],
+        help='部件类型: ddx(导地线), gt(杆塔), jyz(绝缘子), gd(挂点), global(全局缺陷), jc(基础类)'
     )
 
     parser.add_argument(
@@ -869,7 +869,7 @@ def main():
         sys.exit(1)
 
     # 如果不是global模式，必须提供component-ann
-    if args.component_type != 'global':
+    if args.component_type not in ('global', 'jc'):
         if not args.component_ann:
             print(f"❌ 错误: 非global模式必须提供 --component-ann 参数")
             sys.exit(1)
@@ -895,13 +895,13 @@ def main():
         print(f"  图片索引: {args.image_index} (pkl索引方式)")
     else:
         print(f"  图片索引: 文件夹扫描方式")
-    if args.component_type != 'global':
+    if args.component_type not in ('global', 'jc'):
         print(f"  部件XML目录: {args.component_ann}")
     print(f"  缺陷XML目录: {args.defect_ann}")
     print(f"  输出目录: {args.output}")
     print(f"  配置文件: {args.config}")
     print(f"  线程数: {args.workers}")
-    if args.component_type == 'global':
+    if args.component_type in ('global', 'jc'):
         print(f"  模式: 全局缺陷（不裁切）")
     else:
         print(f"  模式: 仅正样本")
