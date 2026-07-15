@@ -21,6 +21,9 @@ from defect_coverage_analyzer import analyze_single_image, generate_summary_repo
 支持两种图片索引方式：
 1. pkl索引文件（通过 --image-index 参数指定）
 2. 文件夹直接扫描（不指定 --image-index 时使用）
+
+新增功能：
+- 支持断点续传：自动保存处理进度，中断后可继续处理
 '''
 
 
@@ -34,6 +37,10 @@ counter = 0
 # 统计每个类别被裁切的缺陷数量（面积达标但超出部件范围需要调整bbox的）
 clipped_stats_lock = threading.Lock()
 clipped_stats = {}  # {类别名: 裁切次数}
+
+# 断点续传：已处理的图片集合
+processed_images_lock = threading.Lock()
+processed_images = set()  # 已处理的图片名称
 
 def print_with_count(msg):
     """线程安全打印，每行前加计数"""
@@ -49,6 +56,16 @@ def increment_clipped_stat(class_name):
             clipped_stats[class_name] = 0
         clipped_stats[class_name] += 1
 
+def mark_image_processed(img_name):
+    """线程安全地标记图片已处理"""
+    with processed_images_lock:
+        processed_images.add(img_name)
+
+def is_image_processed(img_name):
+    """线程安全地检查图片是否已处理"""
+    with processed_images_lock:
+        return img_name in processed_images
+
 # ==================== 配置加载 ====================
 
 class ComponentConfig:
@@ -61,6 +78,9 @@ class ComponentConfig:
         self.expand_long_ratio = config_dict.get('expand_long_ratio', 0.35)  # 长边扩充比例
         self.expand_short_ratio = config_dict.get('expand_short_ratio', 0.45)  # 短边扩充比例
         self.class_mapping = config_dict.get('class_mapping', {})
+        # 读取XML时的过滤集合：需要同时包含映射前的原始类别名，
+        # 否则 class_mapping 的 key（如 xcxj_lsqdp）会在读取阶段就被过滤掉，映射永远不会生效
+        self.defect_classes_raw = list(set(self.defect_classes) | set(self.class_mapping.keys()))
 
 def load_config(config_path):
     """加载配置文件"""
@@ -78,6 +98,27 @@ def load_config(config_path):
     default_threshold = global_config.get('default_threshold', 0.80)
 
     return component_configs, default_threshold
+
+def load_progress(progress_file):
+    """加载处理进度"""
+    if os.path.exists(progress_file):
+        try:
+            with open(progress_file, 'r', encoding='utf-8') as f:
+                processed = set(line.strip() for line in f if line.strip())
+            print_with_count(f"✅ 加载进度文件，已处理 {len(processed)} 张图片")
+            return processed
+        except Exception as e:
+            print_with_count(f"⚠️  加载进度文件失败: {e}，将从头开始")
+            return set()
+    return set()
+
+def save_progress(progress_file, img_name):
+    """保存处理进度（追加模式）"""
+    try:
+        with open(progress_file, 'a', encoding='utf-8') as f:
+            f.write(f"{img_name}\n")
+    except Exception as e:
+        print_with_count(f"⚠️  保存进度失败: {e}")
 
 # ==================== 工具函数 ====================
 
@@ -316,13 +357,18 @@ def create_xml(filename, width, height, objects, save_path):
 # ==================== 处理单张图片 ====================
 
 def process_single_image_global(img_name, images_dir, image_index, defect_ann_dir, out_dir,
-                                config, use_pkl_index):
+                                config, use_pkl_index, progress_file):
     """
     处理单张图片的全局缺陷（不裁切，只筛选类别）
     config: ComponentConfig 对象
     defect_ann_dir: 缺陷标注XML目录
     use_pkl_index: 是否使用pkl索引（True=使用pkl，False=使用文件夹扫描）
+    progress_file: 进度文件路径
     """
+    # 检查是否已处理
+    if is_image_processed(img_name):
+        return None
+
     # 获取原图路径
     img_path = image_index.get(img_name)
     if not img_path:
@@ -349,8 +395,8 @@ def process_single_image_global(img_name, images_dir, image_index, defect_ann_di
         print_with_count(f"⚠️  缺陷XML不存在: {xml_path}，跳过")
         return None
 
-    # 获取所有缺陷
-    all_defects = get_objects_from_xml(xml_path, config.defect_classes)
+    # 获取所有缺陷（过滤集合需包含映射前的原始类别名，见 defect_classes_raw）
+    all_defects = get_objects_from_xml(xml_path, config.defect_classes_raw)
 
     # 应用类别映射（如果有）
     if config.class_mapping:
@@ -360,6 +406,8 @@ def process_single_image_global(img_name, images_dir, image_index, defect_ann_di
 
     # 正样本模式：如果没有目标类别缺陷，跳过（只保留有缺陷的图片）
     if not all_defects:
+        mark_image_processed(img_name)
+        save_progress(progress_file, img_name)
         return None
 
     # 打开原图获取尺寸
@@ -401,25 +449,34 @@ def process_single_image_global(img_name, images_dir, image_index, defect_ann_di
         'defects': defects_info
     }
 
+    # 标记已处理并保存进度
+    mark_image_processed(img_name)
+    save_progress(progress_file, img_name)
+
     return (xml_name, mapping_info)
 
 
 def process_single_image(img_name, images_dir, image_index, component_ann_dir, defect_ann_dir, out_dir,
-                         config, default_threshold, use_pkl_index):
+                         config, default_threshold, use_pkl_index, progress_file):
     """
     处理单张图片的裁切
     config: ComponentConfig 对象
     component_ann_dir: 部件检测XML目录
     defect_ann_dir: 缺陷标注XML目录
     use_pkl_index: 是否使用pkl索引（True=使用pkl，False=使用文件夹扫描）
+    progress_file: 进度文件路径
     """
+    # 检查是否已处理
+    if is_image_processed(img_name):
+        return [], [], 0
+
     crop_results = []
 
     # 获取原图路径
     img_path = image_index.get(img_name)
     if not img_path:
         print_with_count(f"⚠️  图片 {img_name} 未在索引中找到，跳过")
-        return crop_results
+        return crop_results, [], 0
 
     # 根据索引方式处理路径
     if use_pkl_index:
@@ -431,7 +488,7 @@ def process_single_image(img_name, images_dir, image_index, component_ann_dir, d
 
     if not os.path.exists(full_img_path):
         print_with_count(f"⚠️  图片文件不存在: {full_img_path}，跳过")
-        return crop_results
+        return crop_results, [], 0
 
     # 打开原图
     try:
@@ -439,7 +496,7 @@ def process_single_image(img_name, images_dir, image_index, component_ann_dir, d
         img_width, img_height = img.size
     except Exception as e:
         print_with_count(f"❌ 打开图片失败 {full_img_path}: {e}")
-        return crop_results
+        return crop_results, [], 0
 
     # 解析部件XML
     xml_name = os.path.splitext(img_name)[0] + '.xml'
@@ -447,19 +504,21 @@ def process_single_image(img_name, images_dir, image_index, component_ann_dir, d
 
     if not os.path.exists(xml_path):
         print_with_count(f"⚠️  部件XML不存在: {xml_path}，跳过")
-        return crop_results
+        return crop_results, [], 0
 
     # 获取所有部件框
     components = get_objects_from_xml(xml_path, config.component_classes)
     if not components:
         print_with_count(f"⚠️  图片 {img_name} 中未找到目标部件类别，跳过")
-        return crop_results
+        mark_image_processed(img_name)
+        save_progress(progress_file, img_name)
+        return crop_results, [], 0
 
     # 解析缺陷XML
     xml2_path = os.path.join(defect_ann_dir, xml_name)
     all_defects = []
     if os.path.exists(xml2_path):
-        all_defects = get_objects_from_xml(xml2_path, config.defect_classes)
+        all_defects = get_objects_from_xml(xml2_path, config.defect_classes_raw)
         # 应用类别映射（如果有）
         if config.class_mapping:
             for defect in all_defects:
@@ -575,12 +634,16 @@ def process_single_image(img_name, images_dir, image_index, component_ann_dir, d
     for d in missed_defects:
         d['original_img_path'] = full_img_path if not use_pkl_index else img_path
 
+    # 标记已处理并保存进度
+    mark_image_processed(img_name)
+    save_progress(progress_file, img_name)
+
     return crop_results, missed_defects, len(all_defects)
 
 # ==================== 多线程处理 ====================
 
 def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_dir, out_dir,
-                      component_type, config_path, max_workers=24):
+                      component_type, config_path, max_workers=24, resume=False):
     """
     多线程批量处理图片
     component_type: 部件类型，如 'ddx', 'gt', 'jyz', 'gd', 'global'
@@ -590,9 +653,12 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
     component_ann_dir: 部件检测XML目录（global类型时可为None）
     defect_ann_dir: 缺陷标注XML目录
     out_dir: 输出目录
+    resume: 是否从断点继续（默认False）
     """
     print("=" * 70)
     print(f"🚀 开始处理部件类型: {component_type}")
+    if resume:
+        print("📌 断点续传模式：已开启")
     print("=" * 70)
 
     # 加载配置
@@ -636,15 +702,35 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
         print("📦 扫描图片文件夹...")
         image_index = build_image_index(images_dir)
 
+    # 准备进度文件
+    progress_file = os.path.join(out_dir, ".progress")
+    global processed_images
+
+    if resume:
+        # 加载已处理的图片列表
+        processed_images = load_progress(progress_file)
+    else:
+        # 清空进度文件（如果存在）
+        if os.path.exists(progress_file):
+            os.remove(progress_file)
+            print(f"🗑️  已清空旧的进度文件")
+        processed_images = set()
+
     # 获取所有XML文件
     if is_global:
         # 全局模式：从缺陷XML目录获取
         xml_files = [f for f in os.listdir(defect_ann_dir) if f.endswith('.xml')]
-        print(f"📁 找到 {len(xml_files)} 个缺陷XML文件\n")
+        print(f"📁 找到 {len(xml_files)} 个缺陷XML文件")
     else:
         # 部件模式：从部件XML目录获取
         xml_files = [f for f in os.listdir(component_ann_dir) if f.endswith('.xml')]
-        print(f"📁 找到 {len(xml_files)} 个部件XML文件\n")
+        print(f"📁 找到 {len(xml_files)} 个部件XML文件")
+
+    if resume and processed_images:
+        remaining = len(xml_files) - len(processed_images)
+        print(f"📊 续传统计: 已完成 {len(processed_images)} 张，剩余 {remaining} 张\n")
+    else:
+        print()
 
     # 创建输出目录
     os.makedirs(os.path.join(out_dir, "images"), exist_ok=True)
@@ -687,13 +773,13 @@ def start_multithread(images_dir, image_pkl_path, component_ann_dir, defect_ann_
                 future = executor.submit(
                     process_single_image_global,
                     img_name, images_dir, image_index, defect_ann_dir, out_dir,
-                    config, use_pkl_index
+                    config, use_pkl_index, progress_file
                 )
             else:
                 future = executor.submit(
                     process_single_image,
                     img_name, images_dir, image_index, component_ann_dir, defect_ann_dir, out_dir,
-                    config, default_threshold, use_pkl_index
+                    config, default_threshold, use_pkl_index, progress_file
                 )
             futures.append(future)
 
@@ -853,8 +939,14 @@ def main():
     parser.add_argument(
         '--workers',
         type=int,
-        default=30,
+        default=32,
         help='线程数 (默认: 20)'
+    )
+
+    parser.add_argument(
+        '--resume',
+        action='store_true',
+        help='从断点继续处理（跳过已处理的图片）'
     )
 
     args = parser.parse_args()
@@ -901,6 +993,7 @@ def main():
     print(f"  输出目录: {args.output}")
     print(f"  配置文件: {args.config}")
     print(f"  线程数: {args.workers}")
+    print(f"  断点续传: {'开启' if args.resume else '关闭'}")
     if args.component_type in ('global', 'jc'):
         print(f"  模式: 全局缺陷（不裁切）")
     else:
@@ -916,7 +1009,8 @@ def main():
         out_dir=args.output,
         component_type=args.component_type,
         config_path=args.config,
-        max_workers=args.workers
+        max_workers=args.workers,
+        resume=args.resume
     )
 
     print("\n" + "=" * 70)

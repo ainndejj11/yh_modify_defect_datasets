@@ -74,6 +74,10 @@ class ComponentConfig:
         self.expand_component = config_dict.get('expand_component', False)
         self.expand_long_ratio = config_dict.get('expand_long_ratio', 0.35)  # 长边扩充比例
         self.expand_short_ratio = config_dict.get('expand_short_ratio', 0.45)  # 短边扩充比例
+        self.class_mapping = config_dict.get('class_mapping', {})
+        # 读取XML时的过滤集合：需包含映射前的原始类别名，否则原始名标注的缺陷
+        # 会在读取阶段就被过滤掉，导致 has_defects_in_component 误判为"无缺陷"而被当成负样本
+        self.defect_classes_raw = list(set(self.defect_classes) | set(self.class_mapping.keys()))
 
 def load_config(config_path):
     """加载配置文件"""
@@ -438,7 +442,12 @@ def process_single_image(img_name, images_dir, image_index, component_ann_dir, d
     xml2_path = os.path.join(defect_ann_dir, xml_name)
     all_defects = []
     if os.path.exists(xml2_path):
-        all_defects = get_objects_from_xml(xml2_path, config.defect_classes)
+        all_defects = get_objects_from_xml(xml2_path, config.defect_classes_raw)
+        # 应用类别映射，确保后续按最终类别名查阈值（overlap_thresholds 的 key 是映射后的名字）
+        if config.class_mapping:
+            for defect in all_defects:
+                if defect['name'] in config.class_mapping:
+                    defect['name'] = config.class_mapping[defect['name']]
 
     # 遍历每个部件进行裁切
     for idx, component in enumerate(components, 1):

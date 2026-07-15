@@ -37,6 +37,9 @@ class ComponentConfig:
         self.expand_long_ratio = config_dict.get('expand_long_ratio', 0.35)
         self.expand_short_ratio = config_dict.get('expand_short_ratio', 0.45)
         self.class_mapping = config_dict.get('class_mapping', {})
+        # 读取XML时的过滤集合：需要同时包含映射前的原始类别名，
+        # 否则 class_mapping 的 key（如 xcxj_lsqdp）会在读取阶段就被过滤掉，映射永远不会生效
+        self.defect_classes_raw = list(set(self.defect_classes) | set(self.class_mapping.keys()))
 
 
 def load_config(config_path):
@@ -866,8 +869,8 @@ def run_analysis(component_type, defect_ann_dir, component_ann_dir, crop_mapping
             print(f"⚠️  无法获取图像尺寸，跳过: {xml_name}")
             return [], 0
 
-        # 加载缺陷
-        all_defects = get_objects_from_xml(str(xml_path), config.defect_classes)
+        # 加载缺陷（过滤集合需包含映射前的原始类别名，见 defect_classes_raw）
+        all_defects = get_objects_from_xml(str(xml_path), config.defect_classes_raw)
         if not all_defects:
             return [], 0
 
