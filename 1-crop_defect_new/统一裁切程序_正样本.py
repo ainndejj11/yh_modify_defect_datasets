@@ -23,7 +23,7 @@ from defect_coverage_analyzer import analyze_single_image, generate_summary_repo
 2. 文件夹直接扫描（不指定 --image-index 时使用）
 
 新增功能：
-- 支持断点续传：自动保存处理进度，中断后可继续处理
+- 支持断点续传：自动保存处理进度，中断后可继续处理(暂不建议使用，功能不完善，目前crop_mapping.json和漏裁报告均未续写)
 '''
 
 
@@ -861,23 +861,23 @@ def main():
     # 方式一：
     #     使用pkl索引文件（部件裁切）
 
-    nohup python 统一裁切程序_正样本.py gd \
+    nohup python 统一裁切程序_正样本.py gt \
         --images-dir /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/JPEGImages \
         --image-index /raid/wtj/ultralytics-8.4.6/缺陷识别-模型优化v7.0/1-总库图像进行部件检测/image_indexs_20260114.pkl \
         --component-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/部件xmls \
         --defect-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/Annotations \
-        --output /raid/datasets_defect_2026/datasets_train/全量_正样本/gd_data \
-        > inference.log 2>&1 &
+        --output /raid/datasets_defect_2026/datasets_train/全量_正样本/gt_data \
+        > inference2.log 2>&1 &
 
 
     # 方式二：
     #     使用文件夹扫描（部件裁切）
 
-    python 统一裁切程序_正样本.py gd \
+    python 统一裁切程序_正样本.py jc \
         --images-dir /raid/datasets_defect_2026/全图测试集/images \
         --component-ann /raid/datasets_defect_2026/全图测试集/部件_xml \
         --defect-ann /raid/datasets_defect_2026/全图测试集/Annotations \
-        --output /raid/datasets_defect_2026/datasets_val/gd_data/gd_正样本
+        --output /raid/datasets_defect_2026/datasets_val/全量_正样本/jc_data
 
 
     # 方式三：

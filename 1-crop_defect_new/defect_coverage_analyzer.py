@@ -23,6 +23,7 @@ from typing import Dict, List, Tuple, Optional, Any
 from PIL import Image, ImageDraw, ImageFont
 
 import yaml
+from tqdm import tqdm
 
 
 # ==================== 配置加载 ====================
@@ -909,7 +910,7 @@ def run_analysis(component_type, defect_ann_dir, component_ann_dir, crop_mapping
         return missed, len(all_defects)
 
     if max_workers <= 1:
-        for xml_path in defect_xml_files:
+        for xml_path in tqdm(defect_xml_files, desc="分析进度", unit="张"):
             missed, n_defects = process_one(xml_path)
             all_missed_defects.extend(missed)
             total_defects += n_defects
@@ -925,7 +926,8 @@ def run_analysis(component_type, defect_ann_dir, component_ann_dir, crop_mapping
                 total_defects += n_defects
 
         with ThreadPoolExecutor(max_workers=max_workers) as executor:
-            list(executor.map(wrapped_process, defect_xml_files))
+            list(tqdm(executor.map(wrapped_process, defect_xml_files),
+                      total=len(defect_xml_files), desc="分析进度", unit="张"))
 
     # 保存结果
     output_dir = Path(output_dir)
