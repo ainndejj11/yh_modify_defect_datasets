@@ -49,13 +49,14 @@ def main():
 
     
   # 只输出报告，不生成可视化（显式指定crop_mapping）
-  python 分析漏裁.py gd \
+  python 分析漏裁.py ddx \
     --images-dir /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/JPEGImages \
     --image-index /raid/wtj/ultralytics-8.4.6/缺陷识别-模型优化v7.0/1-总库图像进行部件检测/image_indexs_20260114.pkl \
-    --component-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/部件xmls \
+    --component-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/部件_导地线xmls_ddx_v4模型推理 \
     --defect-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/Annotations \
-    --crop-mapping /raid/datasets_defect_2026/datasets_train/全量_正样本/gd_data/crop_mapping_正样本.json \
-    --output /raid/datasets_defect_2026/datasets_train/全量_正样本/gd_data/输出漏裁信息0723
+    --crop-mapping /raid/datasets_defect_2026/datasets_train/全量_正样本/dx_data/crop_mapping_正样本.json \
+    --output /raid/datasets_defect_2026/datasets_train/全量_正样本/dx_data/输出漏裁信息0820 \
+    --viz
 
 
 支持的部件类型: ddx(导地线), gt(杆塔), jyz(绝缘子), gd(挂点)
@@ -129,7 +130,7 @@ def main():
     parser.add_argument(
         '--viz-max',
         type=int,
-        default=0,
+        default=1000,
         help='最多生成多少张可视化图，0 表示不限制 (默认: 0)'
     )
 

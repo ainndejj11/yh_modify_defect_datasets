@@ -861,23 +861,24 @@ def main():
     # 方式一：
     #     使用pkl索引文件（部件裁切）
 
-    nohup python 统一裁切程序_正样本.py gt \
+    nohup python 统一裁切程序_正样本.py ddx \
         --images-dir /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/JPEGImages \
         --image-index /raid/wtj/ultralytics-8.4.6/缺陷识别-模型优化v7.0/1-总库图像进行部件检测/image_indexs_20260114.pkl \
-        --component-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/部件xmls \
+        --component-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/部件_导地线xmls_ddx_v4模型推理 \
         --defect-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/Annotations \
-        --output /raid/datasets_defect_2026/datasets_train/全量_正样本/gt_data \
-        > inference2.log 2>&1 &
+        --output /raid/datasets_defect_2026/datasets_train/全量_正样本/dx_data \
+        > inference.log 2>&1 &
 
 
     # 方式二：
     #     使用文件夹扫描（部件裁切）
 
-    python 统一裁切程序_正样本.py jc \
-        --images-dir /raid/datasets_defect_2026/全图测试集/images \
-        --component-ann /raid/datasets_defect_2026/全图测试集/部件_xml \
-        --defect-ann /raid/datasets_defect_2026/全图测试集/Annotations \
-        --output /raid/datasets_defect_2026/datasets_val/全量_正样本/jc_data
+    nohup python 统一裁切程序_正样本.py ddx \
+        --images-dir /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/全图测试集2026/images \
+        --component-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/全图测试集2026/部件_导地线_xml_ddx_v4模型推理 \
+        --defect-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/全图测试集2026/Annotations \
+        --output /raid/datasets_defect_2026/datasets_val/全量_正样本/dx_data \
+        > inference.log 2>&1 &
 
 
     # 方式三：

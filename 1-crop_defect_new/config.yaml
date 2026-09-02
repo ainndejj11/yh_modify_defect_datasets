@@ -25,9 +25,9 @@ ddx:
   # 面积阈值（缺陷在部件内的占比）
   overlap_thresholds:
     ddx_sg: 0.40
-    ddx_dg: 0.20
+    ddx_dg: 0.30
     ddx_ss: 0.30
-    ddx_yw: 0.20
+    ddx_yw: 0.30
     ddx_xs: 0.40
     yjs_sg: 0.40
     xjqx: 0.80
@@ -37,8 +37,10 @@ ddx:
     fzc_xs: 0.70
     uxls_sd: 0.80
 
-  # 是否对部件框进行扩充
-  expand_component: false
+  # 是否对部件框进行扩充（导地线需要扩充，与绝缘子/挂点同一套 expand_bbox 逻辑）
+  expand_component: true
+  expand_long_ratio: 0.10  # 长边扩充比例（长边两端各扩充10%）
+  expand_short_ratio: 0.10  # 短边扩充比例（短边两端各扩充10%）
 
 
 

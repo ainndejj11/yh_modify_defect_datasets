@@ -708,13 +708,13 @@ def main():
         epilog="""
 使用示例:
   # 使用pkl索引文件（部件负样本）
-  python 统一裁切程序_负样本.py ddx \\
-    --images-dir /path/to/JPEGImages \\
-    --image-index /path/to/image_index.pkl \\
-    --component-ann /path/to/导地线检测xml结果 \\
-    --defect-ann /path/to/Annotations \\
-    --output /path/to/output_ddx_negative \\
-    --negative-count 1000
+  python 统一裁切程序_负样本.py gd \
+    --images-dir /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/JPEGImages \
+    --image-index /raid/wtj/ultralytics-8.4.6/缺陷识别-模型优化v7.0/1-总库图像进行部件检测/image_indexs_20260114.pkl \
+    --component-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/部件xmls \
+    --defect-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/Annotations \
+    --output /raid/datasets_defect_2026/datasets_train/负样本/gd_data \
+    --negative-count 100000
 
   # 使用文件夹扫描（部件负样本）
   python 统一裁切程序_负样本.py ddx \
