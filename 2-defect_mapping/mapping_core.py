@@ -368,6 +368,29 @@ def iou(box_a: Sequence[int], box_b: Sequence[int]) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def cluster_indices(n: int, should_merge) -> List[List[int]]:
+    """按 should_merge(i, j) 把 0..n-1 分成连通分量，组内保持首次出现顺序。"""
+    parent = list(range(n))
+
+    def find(x: int) -> int:
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+
+    for i in range(n):
+        for j in range(i + 1, n):
+            if should_merge(i, j):
+                root_i, root_j = find(i), find(j)
+                if root_i != root_j:
+                    parent[root_j] = root_i
+
+    groups: Dict[int, List[int]] = {}
+    for i in range(n):
+        groups.setdefault(find(i), []).append(i)
+    return list(groups.values())
+
+
 def crop_to_source(bbox_in_crop: Sequence[int], part_bbox: Sequence[int]) -> BBox:
     """子图坐标 -> 原图坐标（加上部件框左上角偏移）"""
     dx, dy = int(part_bbox[0]), int(part_bbox[1])

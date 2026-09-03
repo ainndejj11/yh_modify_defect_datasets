@@ -15,7 +15,8 @@
 
 用法：
   # 预演（推荐先跑）
-  python 2_应用变更集.py --changeset /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data/映射原图过程/changeset.json
+  python 2_应用变更集.py --changeset /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data/映射原图过程/changeset.json 
+  python 2_应用变更集.py --changeset /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data/映射原图过程/supplement_changeset.json
 
   # 真正写入
   python 2_应用变更集.py --changeset /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data/映射原图过程/changeset.json --apply
@@ -322,8 +323,8 @@ def main(argv=None) -> int:
         print_problems(problems)
         if not args.skip_invalid:
             print('\n❌ 已中止，未写入任何文件。')
-            print('   请重新运行 1_生成变更集.py 生成最新的变更集，')
-            print('   或在确知风险的前提下加 --skip-invalid 跳过这些文件。')
+            print('   请优先加 --skip-invalid 再预演一次，跳过这些文件并检查结果。')
+            print('   尽量不要重新运行 1_生成变更集.py，否则审核队列会换 id，已有决策对不上，要重新审核。')
             return 2
         print('\n⚠️  --skip-invalid 已开启，将跳过有问题的部分继续执行。')
     else:

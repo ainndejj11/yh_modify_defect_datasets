@@ -189,11 +189,111 @@ def unique_added_by_name(cluster: List[dict]) -> List[dict]:
             'sub_xml': sources[0] if sources else '',
             'sources': sources,
             'part_bbox': first.get('part_bbox'),
+            'bbox_in_crop': first.get('bbox_in_crop'),
             'dataset': first.get('dataset'),
             'original_xml': first.get('original_xml'),
             'merged_from': len(group),
         })
     return reps
+
+
+def _best_existing_overlap(bbox, existing: List[Tuple[str, BBox]],
+                           dup_iou: float) -> Tuple[Optional[Tuple[str, BBox]], float]:
+    best_score, best_obj = 0.0, None
+    for raw_name, obj_bbox in existing:
+        score = mc.iou(bbox, obj_bbox)
+        if score > best_score:
+            best_score, best_obj = score, (raw_name, obj_bbox)
+    if best_obj is None or best_score < dup_iou:
+        return None, 0.0
+    return best_obj, best_score
+
+
+def _kept_add_from_rep(rep: dict) -> dict:
+    sources = list(rep.get('sources') or ([rep['sub_xml']] if rep.get('sub_xml') else []))
+    return {
+        'action': ACT_ADD,
+        'dataset': rep.get('dataset'),
+        'sub_xml': rep.get('sub_xml') or (sources[0] if sources else ''),
+        'original_xml': rep.get('original_xml'),
+        'add_name': rep['add_name'],
+        'add_bbox': list(rep['add_bbox']),
+        'bbox_in_crop': list(rep['bbox_in_crop']) if rep.get('bbox_in_crop') else [],
+        'part_bbox': list(rep['part_bbox']) if rep.get('part_bbox') else [],
+        'sources': sources,
+    }
+
+
+def _overlap_existing_review(reps: List[dict], xml_name: str,
+                             raw_name: str, obj_bbox: BBox, iou_score: float) -> dict:
+    """多个子图在同一位置新增、又叠在原图已有异类框上时，合成一条审核项。"""
+    sources: List[str] = []
+    for r in reps:
+        for src in (r.get('sources') or [r.get('sub_xml')]):
+            if src and src not in sources:
+                sources.append(src)
+    first = reps[0]
+    detail = {
+        'existing_name': raw_name,
+        'existing_bbox': list(obj_bbox),
+        'iou': round(iou_score, 4),
+        'sources': sources,
+    }
+    if len(reps) == 1:
+        extra = (f'，{first["merged_from"]} 张子图画了同类已合并'
+                 if first.get('merged_from', 1) > 1 else '')
+        options = [
+            make_option(
+                'retag',
+                f'认定是同一个缺陷、人工纠正了类别：'
+                f'把原图的 {raw_name} 改成 {first["add_name"]}{extra}',
+                {'action': ACT_SET_NAME, 'target_name': raw_name,
+                 'target_bbox': list(obj_bbox),
+                 'new_name': first['add_name'], 'sources': sources}),
+            make_option(
+                'add',
+                f'认定是两个不同的缺陷：额外新增 {first["add_name"]} '
+                f'{list(first["add_bbox"])}（原图已有框保持不变，只写一个框）{extra}',
+                {'action': ACT_ADD, 'new_name': first['add_name'],
+                 'new_bbox': list(first['add_bbox']), 'sources': sources}),
+        ]
+        add_name = first['add_name']
+        add_bbox = list(first['add_bbox'])
+    else:
+        detail['note'] = '多个子图在同一位置新增了不同类别，且与原图已有框重叠'
+        detail['candidates'] = [{
+            'sub_xml': ' / '.join(r.get('sources') or [r.get('sub_xml') or '']),
+            'name': r['add_name'],
+            'bbox': r['add_bbox'],
+            'merged_from': r.get('merged_from', 1),
+        } for r in reps]
+        options = []
+        for r in reps:
+            extra = (f'，{r["merged_from"]} 张子图画了同类已合并'
+                     if r.get('merged_from', 1) > 1 else '')
+            options.append(make_option(
+                f'retag_{r["add_name"]}',
+                f'把原图的 {raw_name} 改成 {r["add_name"]}{extra}',
+                {'action': ACT_SET_NAME, 'target_name': raw_name,
+                 'target_bbox': list(obj_bbox),
+                 'new_name': r['add_name'],
+                 'sources': list(r.get('sources') or [r.get('sub_xml')])}))
+        options.extend(added_conflict_options(reps))
+        add_name = ' / '.join(r['add_name'] for r in reps)
+        add_bbox = list(first['add_bbox'])
+
+    return {
+        'reason': 'added_overlaps_existing',
+        'dataset': first.get('dataset'),
+        'sub_xml': ' / '.join(sources),
+        'original_xml': xml_name,
+        'add_name': add_name,
+        'add_bbox': add_bbox,
+        'part_bbox': first.get('part_bbox'),
+        'bbox_in_crop': first.get('bbox_in_crop'),
+        'detail': detail,
+        'options': options,
+    }
 
 
 def added_conflict_options(reps: List[dict]) -> List[dict]:
@@ -595,11 +695,13 @@ def resolve_cross_crop(proposals: List[dict], args) -> Tuple[List[dict], List[di
 def resolve_added(proposals: List[dict], index: OriginalIndex,
                   comp: mc.ComponentConfig, args) -> Tuple[List[dict], List[dict], Counter]:
     """
-    新增框的两类重复：
-      1) 与原图已有框重叠 —— 该缺陷原本就标了，只是裁切时被面积阈值或类别过滤挡掉了，
-         人工在子图里以为漏标就又画了一个。同类名直接跳过，异类名交人工确认。
-      2) 多个子图在同一位置各画了一个 —— 部件框互相重叠导致。同类名合并成一条，
-         异类名交人工确认。
+    新增框去重。必须先跨子图合并，再去对原图已有框：
+
+      1) 不同子图、位置重叠（IoU ≥ dup_iou）的新增先聚类。
+         同类名合成一条；异类名先各留一条代表。
+         同一个子图内部的重叠框不参与去重（人工有意画的两个缺陷）。
+      2) 每个代表再跟原图已有框比：同类名跳过，异类名交人工确认。
+         多个子图叠在同一个原图框上，只出一张审核卡，选 add 也只写一个框。
     """
     kept: List[dict] = []
     reviews: List[dict] = []
@@ -615,96 +717,52 @@ def resolve_added(proposals: List[dict], index: OriginalIndex,
     for xml_name, items in by_xml.items():
         existing = index.objects.get(xml_name, [])
 
-        # ---- 1) 与原图已有框比对 ----
-        survivors: List[dict] = []
-        for p in items:
-            bbox = tuple(p['add_bbox'])
-            best_score, best_obj = 0.0, None
-            for raw_name, obj_bbox in existing:
-                score = mc.iou(bbox, obj_bbox)
-                if score > best_score:
-                    best_score, best_obj = score, (raw_name, obj_bbox)
+        groups = mc.cluster_indices(len(items), lambda i, j: (
+            items[i]['sub_xml'] != items[j]['sub_xml']
+            and mc.iou(items[i]['add_bbox'], items[j]['add_bbox']) >= args.dup_iou
+        ))
 
-            if best_obj is None or best_score < args.dup_iou:
-                survivors.append(p)
-                continue
-
-            raw_name, obj_bbox = best_obj
-            if comp.map_name(raw_name) == p['add_name'] or raw_name == p['add_name']:
-                stats['added_skipped_same_class'] += 1  # 原图已有，跳过
-                continue
-
-            reviews.append({
-                'reason': 'added_overlaps_existing',
-                'dataset': p['dataset'], 'sub_xml': p['sub_xml'], 'original_xml': xml_name,
-                'add_name': p['add_name'], 'add_bbox': p['add_bbox'],
-                'part_bbox': p['part_bbox'], 'bbox_in_crop': p['bbox_in_crop'],
-                'detail': {'existing_name': raw_name, 'existing_bbox': list(obj_bbox),
-                           'iou': round(best_score, 4)},
-                'options': [
-                    make_option('retag',
-                                f'认定是同一个缺陷、人工纠正了类别：'
-                                f'把原图的 {raw_name} 改成 {p["add_name"]}',
-                                {'action': 'set_name', 'target_name': raw_name,
-                                 'target_bbox': list(obj_bbox),
-                                 'new_name': p['add_name'], 'sources': [p['sub_xml']]}),
-                    make_option('add',
-                                f'认定是两个不同的缺陷：额外新增 {p["add_name"]} '
-                                f'{p["add_bbox"]}（原图已有框保持不变）',
-                                {'action': ACT_ADD, 'new_name': p['add_name'],
-                                 'new_bbox': list(p['add_bbox']),
-                                 'sources': [p['sub_xml']]}),
-                ],
-            })
-            stats['added_overlaps_existing'] += 1
-
-        # ---- 2) 新增框之间去重 ----
-        # 只在「不同子图」之间去重：同一个子图里人工画的多个重叠框是有意为之
-        # （比如同一位置确实有两个不同类别的缺陷），不能当成重复。
-        count = len(survivors)
-        parent = list(range(count))
-
-        def find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
-        for i in range(count):
-            for j in range(i + 1, count):
-                if survivors[i]['sub_xml'] == survivors[j]['sub_xml']:
-                    continue
-                if mc.iou(survivors[i]['add_bbox'], survivors[j]['add_bbox']) >= args.dup_iou:
-                    root_i, root_j = find(i), find(j)
-                    if root_i != root_j:
-                        parent[root_j] = root_i
-
-        clusters: Dict[int, List[dict]] = defaultdict(list)
-        for i in range(count):
-            clusters[find(i)].append(survivors[i])
-
-        for cluster in clusters.values():
-            p = cluster[0]
-            if len(cluster) == 1:
-                kept.append(p)
-                continue
-
+        for idxs in groups:
+            cluster = [items[i] for i in idxs]
             names = {c['add_name'] for c in cluster}
-            if len(names) == 1:
-                merged = dict(p)
-                merged['sources'] = [c['sub_xml'] for c in cluster]
-                kept.append(merged)
+            if len(cluster) > 1 and len(names) == 1:
                 stats['added_merged_across_crops'] += len(cluster) - 1
-            else:
-                reps = unique_added_by_name(cluster)
+
+            reps = unique_added_by_name(cluster)
+            leftover: List[dict] = []
+            by_existing: Dict[Tuple[str, BBox], List[Tuple[dict, float]]] = defaultdict(list)
+
+            for rep in reps:
+                hit, score = _best_existing_overlap(
+                    tuple(rep['add_bbox']), existing, args.dup_iou)
+                if hit is None:
+                    leftover.append(rep)
+                    continue
+                raw_name, obj_bbox = hit
+                if comp.map_name(raw_name) == rep['add_name'] or raw_name == rep['add_name']:
+                    stats['added_skipped_same_class'] += 1
+                    continue
+                by_existing[(raw_name, tuple(obj_bbox))].append((rep, score))
+
+            for (raw_name, obj_bbox), group in by_existing.items():
+                group_reps = [r for r, _ in group]
+                iou_score = max(s for _, s in group)
+                reviews.append(_overlap_existing_review(
+                    group_reps, xml_name, raw_name, obj_bbox, iou_score))
+                stats['added_overlaps_existing'] += 1
+
+            if len(leftover) == 1:
+                kept.append(_kept_add_from_rep(leftover[0]))
+            elif len(leftover) > 1:
+                p = leftover[0]
                 reviews.append({
                     'reason': 'cross_crop_added_conflict',
                     'dataset': p['dataset'],
-                    'sub_xml': ' / '.join(r['sub_xml'] for r in reps),
+                    'sub_xml': ' / '.join(r['sub_xml'] for r in leftover),
                     'original_xml': xml_name,
-                    'add_name': ' / '.join(r['add_name'] for r in reps),
-                    'add_bbox': list(reps[0]['add_bbox']),
-                    'part_bbox': reps[0].get('part_bbox'),
+                    'add_name': ' / '.join(r['add_name'] for r in leftover),
+                    'add_bbox': list(p['add_bbox']),
+                    'part_bbox': p.get('part_bbox'),
                     'detail': {
                         'note': '同类名已按类别合并，方案是不重复类别的组合，不会重复写框',
                         'candidates': [{
@@ -712,9 +770,9 @@ def resolve_added(proposals: List[dict], index: OriginalIndex,
                             'name': r['add_name'],
                             'bbox': r['add_bbox'],
                             'merged_from': r['merged_from'],
-                        } for r in reps],
+                        } for r in leftover],
                     },
-                    'options': added_conflict_options(reps),
+                    'options': added_conflict_options(leftover),
                 })
                 stats['added_conflict'] += 1
 

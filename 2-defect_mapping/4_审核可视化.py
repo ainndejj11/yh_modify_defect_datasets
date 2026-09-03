@@ -66,6 +66,9 @@ except ImportError:
 IMG_EXTS = ['.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.bmp', '.BMP',
             '.tif', '.tiff']
 
+# 与 1_生成变更集.py --dup-iou 默认值一致：补充变更集回灌时合并几乎重合的框
+SUPPLEMENT_DUP_IOU = 0.5
+
 # 画框配色
 COLOR_ORIGINAL = (0, 200, 0)       # 原图里已有的框
 COLOR_PROPOSED = (255, 40, 40)     # 人工改动后 / 待新增的框
@@ -1401,6 +1404,100 @@ def cmd_render(args) -> int:
 #  子命令：build-changeset
 # ============================================================
 
+def _merge_change_meta(dst: dict, src: dict) -> None:
+    sources = list(dst.get('sources') or [])
+    for s in (src.get('sources') or []):
+        if s and s not in sources:
+            sources.append(s)
+    dst['sources'] = sources
+    ids = list(dst.get('review_ids') or ([dst['review_id']] if 'review_id' in dst else []))
+    for rid in (src.get('review_ids') or ([src['review_id']] if 'review_id' in src else [])):
+        if rid not in ids:
+            ids.append(rid)
+    if ids:
+        dst['review_ids'] = ids
+
+
+def _modify_outcome(change: dict) -> Tuple:
+    bbox = change.get('new_bbox')
+    return (change.get('action'), change.get('new_name'),
+            tuple(bbox) if bbox else None)
+
+
+def dedupe_supplement_changes(xml_name: str, changes: List[dict],
+                              stats: Counter, problems: List[str],
+                              dup_iou: float = SUPPLEMENT_DUP_IOU) -> List[dict]:
+    """
+    旧审核队列里，同一位置被多个子图各出一张卡。两张都选 add / retag
+    时会写出重复变更。回灌时再收一次：同类重叠只留一条，retag 后不再加同名框。
+    """
+    if len(changes) <= 1:
+        return changes
+
+    modifies = [c for c in changes
+                if c.get('action') in ('set_name', 'set_bbox', 'set_name_bbox', 'delete')]
+    adds = [c for c in changes if c.get('action') == 'add']
+    others = [c for c in changes
+              if c.get('action') not in ('set_name', 'set_bbox', 'set_name_bbox', 'delete', 'add')]
+
+    collapsed: List[dict] = []
+    by_target: Dict[Tuple, List[dict]] = {}
+    order: List[Tuple] = []
+    for change in modifies:
+        key = (change.get('target_name'), tuple(change.get('target_bbox') or ()))
+        if key not in by_target:
+            order.append(key)
+            by_target[key] = []
+        by_target[key].append(change)
+
+    for key in order:
+        group = by_target[key]
+        keeper = dict(group[0])
+        outcomes = {_modify_outcome(c) for c in group}
+        if len(group) > 1 and len(outcomes) > 1:
+            problems.append(
+                f'{xml_name} 同一原框 {key} 有互相矛盾的审核决策 {sorted(outcomes)}，'
+                f'已只保留条目 #{keeper.get("review_id")} 的方案')
+        for extra in group[1:]:
+            _merge_change_meta(keeper, extra)
+            stats['supplement_merged_modify'] += 1
+        collapsed.append(keeper)
+
+    merged_adds: List[dict] = []
+    if adds:
+        groups = mc.cluster_indices(len(adds), lambda i, j: (
+            adds[i].get('new_name') == adds[j].get('new_name')
+            and mc.iou(adds[i].get('new_bbox') or [0, 0, 0, 0],
+                       adds[j].get('new_bbox') or [0, 0, 0, 0]) >= dup_iou
+        ))
+        for idxs in groups:
+            keeper = dict(adds[idxs[0]])
+            for k in idxs[1:]:
+                _merge_change_meta(keeper, adds[k])
+                stats['supplement_merged_add'] += 1
+            merged_adds.append(keeper)
+
+    retags = [c for c in collapsed if c.get('action') in ('set_name', 'set_name_bbox')]
+    kept_adds: List[dict] = []
+    for add in merged_adds:
+        add_bbox = tuple(add.get('new_bbox') or ())
+        add_name = add.get('new_name')
+        dropped = False
+        if add_bbox and len(add_bbox) == 4:
+            for retag in retags:
+                target = tuple(retag.get('target_bbox') or ())
+                if (len(target) == 4 and add_name == retag.get('new_name')
+                        and mc.iou(add_bbox, target) >= dup_iou):
+                    _merge_change_meta(retag, add)
+                    stats['supplement_dropped_add_after_retag'] += 1
+                    dropped = True
+                    break
+        if not dropped:
+            kept_adds.append(add)
+
+    return collapsed + kept_adds + others
+
+
 def build_supplement_changeset(review_queue_path: str, decisions: dict,
                                original_dir: str, base_meta: dict,
                                decisions_path: str = '') -> Tuple[dict, Counter, List[str]]:
@@ -1449,8 +1546,17 @@ def build_supplement_changeset(review_queue_path: str, decisions: dict,
             entry = {k: v for k, v in one.items() if k != '_multi'}
             entry['review_id'] = item_id
             bucket['changes'].append(entry)
-            stats[entry['action']] += 1
         stats['accepted'] += 1
+
+    for xml_name, bucket in files.items():
+        bucket['changes'] = dedupe_supplement_changes(
+            xml_name, bucket['changes'], stats, problems)
+
+    for action in ('set_name', 'set_bbox', 'set_name_bbox', 'delete', 'add'):
+        stats[action] = 0
+    for bucket in files.values():
+        for ch in bucket['changes']:
+            stats[ch.get('action', '')] += 1
 
     changeset = {
         'version': 1,
@@ -1500,6 +1606,11 @@ def cmd_build_changeset(args) -> int:
     for action in ('set_name', 'set_bbox', 'set_name_bbox', 'delete', 'add'):
         if stats.get(action):
             print(f'  {action:12s} {stats[action]}')
+    if stats.get('supplement_merged_add') or stats.get('supplement_merged_modify') \
+            or stats.get('supplement_dropped_add_after_retag'):
+        print(f'  回灌去重    : 合并 add {stats.get("supplement_merged_add", 0)}，'
+              f'合并改/删 {stats.get("supplement_merged_modify", 0)}，'
+              f'retag 后丢掉的同名 add {stats.get("supplement_dropped_add_after_retag", 0)}')
     print(f'  受影响 XML  : {len(changeset["files"])}')
     if problems:
         print(f'\n⚠️  {len(problems)} 个问题:')
@@ -1699,7 +1810,9 @@ class ReviewHandler(http.server.BaseHTTPRequestHandler):
 
             print(f'[审核服务] 已生成补充变更集: {output} '
                   f'(采纳 {stats["accepted"]}，驳回 {stats["rejected"]}，'
-                  f'{len(changeset["files"])} 个 XML)')
+                  f'{len(changeset["files"])} 个 XML'
+                  f'{"" if not stats.get("supplement_merged_add") and not stats.get("supplement_merged_modify") and not stats.get("supplement_dropped_add_after_retag") else "，已合并重复决策"}'
+                  f')')
 
             self._send_json({
                 'ok': True,
@@ -1710,6 +1823,12 @@ class ReviewHandler(http.server.BaseHTTPRequestHandler):
                 'actions': {k: v for k, v in stats.items()
                             if k in ('set_name', 'set_bbox', 'set_name_bbox',
                                      'delete', 'add')},
+                'deduped': {
+                    'merged_add': stats.get('supplement_merged_add', 0),
+                    'merged_modify': stats.get('supplement_merged_modify', 0),
+                    'dropped_add_after_retag': stats.get(
+                        'supplement_dropped_add_after_retag', 0),
+                },
                 'problems': problems[:20],
                 'next_command': f'python 2_应用变更集.py --changeset {output}',
             })
