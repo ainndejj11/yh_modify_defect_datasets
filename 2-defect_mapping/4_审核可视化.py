@@ -929,7 +929,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
       <span class="sw" style="background:#dc00dc"></span>有变化的边
       <span class="sw" style="background:#ffaa00"></span>其他候选
       <span class="sw" style="background:#00b4ff"></span>部件裁切边界
-      &nbsp;&nbsp;快捷键：<span class="kbd">j</span>/<span class="kbd">k</span> 上下条
+      &nbsp;&nbsp;快捷键：<span class="kbd">←</span>/<span class="kbd">→</span> 上下条
       <span class="kbd">1</span>~<span class="kbd">9</span> 选方案
       <span class="kbd">0</span> 驳回
       <span class="kbd">n</span> 下一条未决策
@@ -1245,8 +1245,8 @@ document.addEventListener('keydown', e => {
   if(e.key === 'Escape'){ closeLightbox(); return; }
   // 放大态下不让上下条/选方案的快捷键生效，避免看图时误操作
   if(lightboxOpen()) return;
-  if(e.key === 'j'){ step(1); e.preventDefault(); }
-  else if(e.key === 'k'){ step(-1); e.preventDefault(); }
+  if(e.key === 'ArrowRight'){ step(1); e.preventDefault(); }
+  else if(e.key === 'ArrowLeft'){ step(-1); e.preventDefault(); }
   else if(e.key === 'n'){ gotoNext(); e.preventDefault(); }
   else if(e.key >= '0' && e.key <= '9'){ pick(parseInt(e.key)); e.preventDefault(); }
 });
