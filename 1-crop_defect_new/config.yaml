@@ -49,6 +49,7 @@ gt:
   # 部件类别
   component_classes:
     - gt
+    - gtjc
 
   # 缺陷类别
   defect_classes:

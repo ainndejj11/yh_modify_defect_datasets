@@ -66,6 +66,9 @@ except ImportError:
 IMG_EXTS = ['.jpg', '.JPG', '.jpeg', '.JPEG', '.png', '.PNG', '.bmp', '.BMP',
             '.tif', '.tiff']
 
+
+            
+
 # 与 1_生成变更集.py --dup-iou 默认值一致：补充变更集回灌时合并几乎重合的框
 SUPPLEMENT_DUP_IOU = 0.5
 
