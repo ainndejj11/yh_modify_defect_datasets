@@ -582,10 +582,11 @@ def process_single_image(img_name, images_dir, image_index, component_ann_dir, d
 
         crop_width, crop_height = cropped_img.size
 
-        # 生成新文件名
+        # 生成新文件名（末尾追加部件类别，便于区分同图多部件）
         base_name = os.path.splitext(img_name)[0]
-        new_img_name = f"{base_name}_crop{idx}.jpg"
-        new_xml_name = f"{base_name}_crop{idx}.xml"
+        comp_name = component['name']
+        new_img_name = f"{base_name}_crop{idx}_{comp_name}.jpg"
+        new_xml_name = f"{base_name}_crop{idx}_{comp_name}.xml"
 
         # 保存子图
         out_img_path = os.path.join(out_dir, "images", new_img_name)
