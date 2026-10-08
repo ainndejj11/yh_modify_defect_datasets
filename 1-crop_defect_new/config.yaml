@@ -260,7 +260,7 @@ global:
   # 全局缺陷不需要部件类别
   component_classes: []
 
-  # 全局缺陷类别
+  # 全局缺陷类别（28类，全图不裁切）
   defect_classes:
     - gt_yw
     - ddx_dg
@@ -281,6 +281,15 @@ global:
     - jyh_tl
     - jyh_zs
     - jyh_qs
+    - td_wjj
+    - td_dc
+    - td_ttc
+    - fnc_sh
+    - fnc_wdk
+    - qnq_sh
+    - bsp_sh
+    - bsp_twbq
+    - fzc_hycp
 
   # 全局缺陷不需要面积阈值（不做裁切）
   overlap_thresholds: {}

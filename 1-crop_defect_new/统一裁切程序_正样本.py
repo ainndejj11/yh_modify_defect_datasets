@@ -885,11 +885,12 @@ def main():
     # 方式三：
     #     全局缺陷、基础缺陷（不裁切，只筛选类别）
 
-    python 统一裁切程序_正样本.py jc \
+    nohup python 统一裁切程序_正样本.py global \
         --images-dir /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/JPEGImages \
-        --image-index /raid/wtj/ultralytics-8.4.6/缺陷识别-模型优化v7.0/1-总库图像进行部件检测/image_indexs_20260114.pkl \
+        --image-index /raid/wtj/ultralytics-8.4.66/全局缺陷-处理脚本/image_indexs_20260114.pkl \
         --defect-ann /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/训练集/Annotations \
-        --output /raid/datasets_defect_2026/datasets_train/全量_正样本/jc_data
+        --output /raid/datasets_defect_2026/datasets_train/全量_正样本/global_data \
+        > inference.log 2>&1 &
 
         """
     )
