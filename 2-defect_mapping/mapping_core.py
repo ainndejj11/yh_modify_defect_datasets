@@ -357,6 +357,22 @@ def iou(box_a: Sequence[int], box_b: Sequence[int]) -> float:
     return inter / union if union > 0 else 0.0
 
 
+def box_area(box: Sequence[int]) -> float:
+    return max(0, box[2] - box[0]) * max(0, box[3] - box[1])
+
+
+def containment_ratio(box_a: Sequence[int], box_b: Sequence[int]) -> float:
+    """交集面积 / 较小框面积。一框完全落在另一框里时为 1，与谁大谁小无关。"""
+    inter_w = min(box_a[2], box_b[2]) - max(box_a[0], box_b[0])
+    inter_h = min(box_a[3], box_b[3]) - max(box_a[1], box_b[1])
+    if inter_w <= 0 or inter_h <= 0:
+        return 0.0
+    smaller = min(box_area(box_a), box_area(box_b))
+    if smaller <= 0:
+        return 0.0
+    return (inter_w * inter_h) / smaller
+
+
 def cluster_indices(n: int, should_merge) -> List[List[int]]:
     """按 should_merge(i, j) 把 0..n-1 分成连通分量，组内保持首次出现顺序。"""
     parent = list(range(n))

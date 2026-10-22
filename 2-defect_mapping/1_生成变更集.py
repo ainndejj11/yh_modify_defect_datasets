@@ -65,7 +65,9 @@ REASONS = {
     'cross_crop_inconsistent':
         '同一个原图缺陷被多个子图裁到，各子图的清洗结果互相矛盾',
     'cross_crop_added_conflict':
-        '多个子图在原图同一位置新增了不同类别；同类名已合并，按不重复类别选择',
+        '多个子图在原图同一位置新增了不同类别；同一类别里未达到同类重叠阈值的框会一起保留',
+    'same_class_overlap':
+        '同类框 IoU 达到阈值，或小框大部分落在大框里。请选择只留较大的、只留较小的，或都留下',
     'ledger_conflict':
         '该框已被其他数据集改过，且本次要改成不同的结果',
     'sub_xml_unreadable':
@@ -158,10 +160,33 @@ def make_option(key: str, label: str, change: dict) -> dict:
     return {'key': key, 'label': label, 'change': change}
 
 
+def _sources_of(item: dict) -> List[str]:
+    sources: List[str] = []
+    for src in list(item.get('sources') or []) + [item.get('sub_xml')]:
+        if src and src not in sources:
+            sources.append(src)
+    return sources
+
+
+def classes_match(comp: mc.ComponentConfig, name_a: str, name_b: str) -> bool:
+    """原图类名和子图类名是否同一类（过一遍 class_mapping）。"""
+    if not name_a or not name_b:
+        return False
+    if name_a == name_b:
+        return True
+    return comp.map_name(name_a) == comp.map_name(name_b)
+
+
+def same_class_conflict(box_a, box_b, same_iou: float, contain_ratio: float) -> bool:
+    """同类框进人工审核：IoU 达到阈值，或者小框大部分落在大框里。"""
+    if mc.iou(box_a, box_b) >= same_iou:
+        return True
+    return mc.containment_ratio(box_a, box_b) >= contain_ratio
+
+
 def unique_added_by_name(cluster: List[dict]) -> List[dict]:
     """
-    同一位置、同一类别的新增只留一条（多张子图重复画了同一个类）。
-    代表框取第一条，来源子图合并去重。
+    按类别收成代表。每个框都保留：没达到同类重叠/包含阈值的框不能丢掉。
     同时兼容生成阶段的 add_name/add_bbox 和审核队列里的 name/bbox。
     """
     groups: Dict[str, List[dict]] = defaultdict(list)
@@ -178,15 +203,22 @@ def unique_added_by_name(cluster: List[dict]) -> List[dict]:
     for name in order:
         group = groups[name]
         first = group[0]
-        bbox = first.get('add_bbox') or first.get('bbox')
+        bboxes: List[list] = []
+        box_sources: List[List[str]] = []
         sources: List[str] = []
         for g in group:
-            for src in ([g.get('sub_xml')] + list(g.get('sources') or [])):
-                if src and src not in sources:
+            bbox = list(g.get('add_bbox') or g.get('bbox'))
+            srcs = _sources_of(g)
+            bboxes.append(bbox)
+            box_sources.append(srcs)
+            for src in srcs:
+                if src not in sources:
                     sources.append(src)
         reps.append({
             'add_name': name,
-            'add_bbox': list(bbox),
+            'add_bbox': list(bboxes[0]),
+            'bboxes': bboxes,
+            'box_sources': box_sources,
             'sub_xml': sources[0] if sources else '',
             'sources': sources,
             'part_bbox': first.get('part_bbox'),
@@ -198,31 +230,34 @@ def unique_added_by_name(cluster: List[dict]) -> List[dict]:
     return reps
 
 
-def _best_existing_overlap(bbox, existing: List[Tuple[str, BBox]],
-                           dup_iou: float) -> Tuple[Optional[Tuple[str, BBox]], float]:
-    best_score, best_obj = 0.0, None
-    for raw_name, obj_bbox in existing:
-        score = mc.iou(bbox, obj_bbox)
-        if score > best_score:
-            best_score, best_obj = score, (raw_name, obj_bbox)
-    if best_obj is None or best_score < dup_iou:
-        return None, 0.0
-    return best_obj, best_score
+def _rep_box_count(rep: dict) -> int:
+    return len(rep.get('bboxes') or [rep.get('add_bbox')])
 
 
-def _kept_add_from_rep(rep: dict) -> dict:
-    sources = list(rep.get('sources') or ([rep['sub_xml']] if rep.get('sub_xml') else []))
-    return {
+def _rep_extra(rep: dict) -> str:
+    n = _rep_box_count(rep)
+    if n > 1:
+        return f'，该类别有 {n} 个框都会写入'
+    return ''
+
+
+def _add_changes_from_rep(rep: dict) -> List[dict]:
+    boxes = rep.get('bboxes') or [rep['add_bbox']]
+    box_sources = rep.get('box_sources') or [rep.get('sources') or []]
+    if len(box_sources) != len(boxes):
+        box_sources = [list(rep.get('sources') or [])] * len(boxes)
+    return [{
         'action': ACT_ADD,
-        'dataset': rep.get('dataset'),
-        'sub_xml': rep.get('sub_xml') or (sources[0] if sources else ''),
-        'original_xml': rep.get('original_xml'),
-        'add_name': rep['add_name'],
-        'add_bbox': list(rep['add_bbox']),
-        'bbox_in_crop': list(rep['bbox_in_crop']) if rep.get('bbox_in_crop') else [],
-        'part_bbox': list(rep['part_bbox']) if rep.get('part_bbox') else [],
-        'sources': sources,
-    }
+        'new_name': rep['add_name'],
+        'new_bbox': list(bbox),
+        'sources': list(sources),
+    } for bbox, sources in zip(boxes, box_sources)]
+
+
+def _pack_changes(changes: List[dict]) -> dict:
+    if len(changes) == 1:
+        return changes[0]
+    return {'action': ACT_ADD, '_multi': changes}
 
 
 def _overlap_existing_review(reps: List[dict], xml_name: str,
@@ -241,8 +276,8 @@ def _overlap_existing_review(reps: List[dict], xml_name: str,
         'sources': sources,
     }
     if len(reps) == 1:
-        extra = (f'，{first["merged_from"]} 张子图画了同类已合并'
-                 if first.get('merged_from', 1) > 1 else '')
+        extra = _rep_extra(first)
+        add_changes = _add_changes_from_rep(first)
         options = [
             make_option(
                 'retag',
@@ -253,25 +288,35 @@ def _overlap_existing_review(reps: List[dict], xml_name: str,
                  'new_name': first['add_name'], 'sources': sources}),
             make_option(
                 'add',
-                f'认定是两个不同的缺陷：额外新增 {first["add_name"]} '
-                f'{list(first["add_bbox"])}（原图已有框保持不变，只写一个框）{extra}',
-                {'action': ACT_ADD, 'new_name': first['add_name'],
-                 'new_bbox': list(first['add_bbox']), 'sources': sources}),
+                f'认定是不同的缺陷：额外新增 {first["add_name"]} '
+                f'{[list(b) for b in (first.get("bboxes") or [first["add_bbox"]])]}'
+                f'（原图已有框保持不变）{extra}',
+                _pack_changes(add_changes)),
         ]
         add_name = first['add_name']
         add_bbox = list(first['add_bbox'])
+        if _rep_box_count(first) > 1:
+            detail['candidates'] = [{
+                'sub_xml': ' / '.join(srcs),
+                'name': first['add_name'],
+                'bbox': list(bbox),
+            } for bbox, srcs in zip(first.get('bboxes') or [], first.get('box_sources') or [])]
     else:
         detail['note'] = '多个子图在同一位置新增了不同类别，且与原图已有框重叠'
-        detail['candidates'] = [{
-            'sub_xml': ' / '.join(r.get('sources') or [r.get('sub_xml') or '']),
-            'name': r['add_name'],
-            'bbox': r['add_bbox'],
-            'merged_from': r.get('merged_from', 1),
-        } for r in reps]
+        detail['candidates'] = []
+        for r in reps:
+            boxes = r.get('bboxes') or [r['add_bbox']]
+            srcs_list = r.get('box_sources') or [r.get('sources') or []]
+            for bbox, srcs in zip(boxes, srcs_list):
+                detail['candidates'].append({
+                    'sub_xml': ' / '.join(srcs),
+                    'name': r['add_name'],
+                    'bbox': list(bbox),
+                    'merged_from': 1,
+                })
         options = []
         for r in reps:
-            extra = (f'，{r["merged_from"]} 张子图画了同类已合并'
-                     if r.get('merged_from', 1) > 1 else '')
+            extra = _rep_extra(r)
             options.append(make_option(
                 f'retag_{r["add_name"]}',
                 f'把原图的 {raw_name} 改成 {r["add_name"]}{extra}',
@@ -300,38 +345,36 @@ def _overlap_existing_review(reps: List[dict], xml_name: str,
 def added_conflict_options(reps: List[dict]) -> List[dict]:
     """
     按「不重复类别」出方案：单选某一类，或选若干类的组合。
-    「全部保留」= 每个不同类别各写一个框，不会把重复画的同类再写一遍。
+    同一类别里没达到同类重叠阈值的框会一起写入。
     """
     options: List[dict] = []
     n = len(reps)
     for r in range(1, n + 1):
         for combo in combinations(reps, r):
             names = [c['add_name'] for c in combo]
-            changes = [{
-                'action': ACT_ADD,
-                'new_name': c['add_name'],
-                'new_bbox': list(c['add_bbox']),
-                'sources': list(c.get('sources') or [c['sub_xml']]),
-            } for c in combo]
+            changes = []
+            for c in combo:
+                changes.extend(_add_changes_from_rep(c))
+            packed = _pack_changes(changes)
             if r == 1:
                 c = combo[0]
                 src = '、'.join(c.get('sources') or [c['sub_xml']])
-                extra = (f'，{c["merged_from"]} 张子图画了同类已合并'
-                         if c.get('merged_from', 1) > 1 else '')
+                boxes = c.get('bboxes') or [c['add_bbox']]
                 options.append(make_option(
                     f'only_{c["add_name"]}',
-                    f'只采纳 {c["add_name"]} {list(c["add_bbox"])}（来自 {src}{extra}）',
-                    changes[0]))
+                    f'只采纳 {c["add_name"]} {[list(b) for b in boxes]}'
+                    f'（来自 {src}{_rep_extra(c)}）',
+                    packed))
             elif r == n:
                 options.append(make_option(
                     'all',
-                    f'全部保留（{n} 个不同类别各写一个框：' + '、'.join(names) + '）',
-                    {'action': ACT_ADD, '_multi': changes}))
+                    f'全部保留（{n} 个不同类别：' + '、'.join(names) + '）',
+                    packed))
             else:
                 options.append(make_option(
                     'plus_' + '__'.join(names),
-                    '采纳 ' + ' + '.join(names) + '（各写一个框）',
-                    {'action': ACT_ADD, '_multi': changes}))
+                    '采纳 ' + ' + '.join(names),
+                    packed))
     return options
 
 
@@ -693,16 +736,359 @@ def resolve_cross_crop(proposals: List[dict], args) -> Tuple[List[dict], List[di
 #  第三阶段：新增框去重
 # ============================================================
 
+def _best_same_class_existing(bbox, add_name: str, existing: List[Tuple[str, BBox]],
+                              comp: mc.ComponentConfig, same_iou: float,
+                              contain_ratio: float):
+    """同类原图框里，重叠或包含达到阈值的最强一个。没有则返回 None。"""
+    best = None
+    for raw_name, obj_bbox in existing:
+        if not classes_match(comp, raw_name, add_name):
+            continue
+        iou_score = mc.iou(bbox, obj_bbox)
+        contain = mc.containment_ratio(bbox, obj_bbox)
+        if iou_score < same_iou and contain < contain_ratio:
+            continue
+        rank = (contain, iou_score)
+        if best is None or rank > best[0]:
+            best = (rank, raw_name, tuple(obj_bbox), iou_score, contain)
+    if best is None:
+        return None
+    _, raw_name, obj_bbox, iou_score, contain = best
+    return {
+        'key': (raw_name, obj_bbox),
+        'name': raw_name,
+        'bbox': obj_bbox,
+        'iou': iou_score,
+        'containment': contain,
+    }
+
+
+def _best_different_class_overlap(bbox, add_name: str, existing: List[Tuple[str, BBox]],
+                                  comp: mc.ComponentConfig, diff_iou: float):
+    """异类原图框里 IoU 达到阈值的最强一个。没有则返回 None。"""
+    best = None
+    for raw_name, obj_bbox in existing:
+        if classes_match(comp, raw_name, add_name):
+            continue
+        score = mc.iou(bbox, obj_bbox)
+        if score < diff_iou:
+            continue
+        if best is None or score > best[0]:
+            best = (score, raw_name, tuple(obj_bbox))
+    if best is None:
+        return None
+    score, raw_name, obj_bbox = best
+    return {'key': (raw_name, obj_bbox), 'name': raw_name, 'bbox': obj_bbox, 'iou': score}
+
+
+def _kept_adds_from_rep(rep: dict) -> List[dict]:
+    """一个类别代表里的每个框各写成一条新增，不丢框。"""
+    boxes = rep.get('bboxes') or [rep['add_bbox']]
+    box_sources = rep.get('box_sources') or [rep.get('sources') or []]
+    if len(box_sources) != len(boxes):
+        box_sources = [list(rep.get('sources') or [])] * len(boxes)
+    kept = []
+    for bbox, sources in zip(boxes, box_sources):
+        kept.append({
+            'action': ACT_ADD,
+            'dataset': rep.get('dataset'),
+            'sub_xml': (sources[0] if sources else rep.get('sub_xml') or ''),
+            'original_xml': rep.get('original_xml'),
+            'add_name': rep['add_name'],
+            'add_bbox': list(bbox),
+            'bbox_in_crop': list(rep['bbox_in_crop']) if rep.get('bbox_in_crop') else [],
+            'part_bbox': list(rep['part_bbox']) if rep.get('part_bbox') else [],
+            'sources': list(sources),
+        })
+    return kept
+
+
+def _describe_cand(cand: dict) -> str:
+    if cand['role'] == 'existing':
+        where = '原图已有'
+    else:
+        src = '、'.join(cand.get('sources') or []) or cand.get('sub_xml') or '?'
+        where = f'新增，来自 {src}'
+    return f'{where} {cand["name"]} {list(cand["bbox"])} 面积 {cand["area"]}'
+
+
+def _effect_text(changes: List[dict], kept_existing: bool) -> str:
+    acts = [c['action'] for c in changes]
+    if acts == [ACT_KEEP]:
+        return '原图框保持不动，不新增'
+    if acts == [ACT_SET_BBOX]:
+        return '把原图框改成这个坐标，不另加新框'
+    if ACT_DELETE in acts:
+        return '删掉原图上参与冲突的框，再写入选中的新增'
+    if kept_existing:
+        return '原图框保持不动，并写入选中的新增'
+    if len(acts) > 1:
+        return f'写入 {len(acts)} 个新增框'
+    return '写入这个新增框'
+
+
+def _add_change_from_cand(cand: dict) -> dict:
+    return {'action': ACT_ADD, 'new_name': cand['name'], 'new_bbox': list(cand['bbox']),
+            'sources': list(cand.get('sources') or [])}
+
+
+def _changes_for_same_class(chosen: List[dict], cands: List[dict],
+                            same_iou: float, contain_ratio: float) -> List[dict]:
+    """把「留下哪些框」折成可写入的变更。原图框还在且只改尺寸时用 set_bbox。"""
+    chosen_ids = {id(c) for c in chosen}
+    existings = [c for c in cands if c['role'] == 'existing']
+    chosen_adds = [c for c in chosen if c['role'] == 'add']
+    sources: List[str] = []
+    for c in cands:
+        for src in c.get('sources') or []:
+            if src not in sources:
+                sources.append(src)
+    if not existings:
+        return [_add_change_from_cand(a) for a in chosen_adds]
+
+    existing = existings[0]
+    if id(existing) in chosen_ids:
+        changes = [_add_change_from_cand(a) for a in chosen_adds]
+        if not changes:
+            return [{'action': ACT_KEEP, 'target_name': existing['name'],
+                     'target_bbox': list(existing['bbox']), 'sources': sources}]
+        return changes
+    if (len(chosen_adds) == 1 and same_class_conflict(
+            chosen_adds[0]['bbox'], existing['bbox'], same_iou, contain_ratio)):
+        return [{'action': ACT_SET_BBOX, 'target_name': existing['name'],
+                 'target_bbox': list(existing['bbox']),
+                 'new_bbox': list(chosen_adds[0]['bbox']),
+                 'sources': list(chosen_adds[0].get('sources') or sources)}]
+    changes = [{'action': ACT_DELETE, 'target_name': existing['name'],
+                'target_bbox': list(existing['bbox']), 'sources': sources}]
+    changes.extend(_add_change_from_cand(a) for a in chosen_adds)
+    return changes
+
+
+def _same_class_option(key: str, prefix: str, chosen: List[dict], cands: List[dict],
+                       same_iou: float, contain_ratio: float) -> dict:
+    changes = _changes_for_same_class(chosen, cands, same_iou, contain_ratio)
+    existings = [c for c in cands if c['role'] == 'existing']
+    kept_existing = bool(existings) and id(existings[0]) in {id(c) for c in chosen}
+    label = (f'{prefix}：' + '；'.join(_describe_cand(c) for c in chosen)
+             + f'（{_effect_text(changes, kept_existing)}）')
+    return make_option(key, label, _pack_changes(changes))
+
+
+def _same_class_review(add_items: List[dict], existing_hit: Optional[dict],
+                       xml_name: str, all_existing: List[Tuple[str, BBox]],
+                       comp: mc.ComponentConfig, args) -> dict:
+    """同类重叠或大框套小框：一张审核卡，方案是留大、留小或都留。"""
+    cands: List[dict] = []
+    for item in add_items:
+        bbox = [int(v) for v in item['add_bbox']]
+        cands.append({
+            'role': 'add',
+            'name': item['add_name'],
+            'bbox': bbox,
+            'area': int(mc.box_area(bbox)),
+            'sub_xml': item.get('sub_xml') or '',
+            'sources': _sources_of(item),
+            'part_bbox': item.get('part_bbox'),
+            'bbox_in_crop': item.get('bbox_in_crop'),
+            'dataset': item.get('dataset'),
+        })
+    if existing_hit is not None:
+        bbox = [int(v) for v in existing_hit['bbox']]
+        cands.append({
+            'role': 'existing',
+            'name': existing_hit['name'],
+            'bbox': bbox,
+            'area': int(mc.box_area(bbox)),
+            'sub_xml': '',
+            'sources': [],
+        })
+    cands.sort(key=lambda c: (-c['area'], c['bbox'], 0 if c['role'] == 'existing' else 1))
+
+    same_iou = args.same_iou
+    contain_ratio = args.contain_ratio
+    areas = [c['area'] for c in cands]
+    options: List[dict] = []
+    if len(cands) == 2:
+        large, small = cands
+        if large['area'] > small['area']:
+            large_prefix, small_prefix = '只留较大的框', '只留较小的框'
+        else:
+            large_prefix, small_prefix = '只留这个框', '只留另一个框'
+        options.append(_same_class_option(
+            'keep_large', large_prefix, [large], cands, same_iou, contain_ratio))
+        options.append(_same_class_option(
+            'keep_small', small_prefix, [small], cands, same_iou, contain_ratio))
+        options.append(_same_class_option(
+            'keep_both', '两个都留', cands, cands, same_iou, contain_ratio))
+    else:
+        max_area, min_area = max(areas), min(areas)
+        unique_max = areas.count(max_area) == 1
+        unique_min = areas.count(min_area) == 1
+        for i, cand in enumerate(cands):
+            if unique_max and cand['area'] == max_area:
+                prefix = '只留面积最大的框'
+            elif unique_min and cand['area'] == min_area:
+                prefix = '只留面积最小的框'
+            else:
+                prefix = '只留这个框'
+            options.append(_same_class_option(
+                f'only_{i}', prefix, [cand], cands, same_iou, contain_ratio))
+        options.append(_same_class_option(
+            'keep_all', f'全部保留（{len(cands)} 个框都留下）', cands, cands,
+            same_iou, contain_ratio))
+
+    pairs = []
+    for i, j in combinations(range(len(cands)), 2):
+        pairs.append({
+            'i': i, 'j': j,
+            'iou': round(mc.iou(cands[i]['bbox'], cands[j]['bbox']), 4),
+            'containment': round(mc.containment_ratio(cands[i]['bbox'], cands[j]['bbox']), 4),
+        })
+    if len(cands) == 2:
+        note = (f'同类框重叠或大框套小框，需要人工选择。'
+                f'IoU={pairs[0]["iou"]}，包含率={pairs[0]["containment"]}。')
+    else:
+        note = f'{len(cands)} 个同类框互相重叠或套在一起，需要人工选择留哪一个，或全部保留。'
+
+    diff_notes = []
+    ignored = existing_hit['key'] if existing_hit else None
+    for cand in cands:
+        if cand['role'] != 'add':
+            continue
+        hit = _best_different_class_overlap(
+            cand['bbox'], cand['name'], all_existing, comp, args.dup_iou)
+        if hit is None or hit['key'] == ignored:
+            continue
+        diff_notes.append({
+            'add_bbox': list(cand['bbox']),
+            'existing_name': hit['name'],
+            'existing_bbox': list(hit['bbox']),
+            'iou': round(hit['iou'], 4),
+        })
+    if diff_notes:
+        note += ' 其中有的新增框还与原图异类框达到重叠阈值，选「都留」或「全部保留」时那些异类框仍会留着。'
+
+    add_cands = [c for c in cands if c['role'] == 'add']
+    largest = cands[0]
+    part_bbox = next((c.get('part_bbox') for c in add_cands if c.get('part_bbox')), None)
+    bbox_in_crop = next((c.get('bbox_in_crop') for c in add_cands if c.get('bbox_in_crop')), None)
+    return {
+        'reason': 'same_class_overlap',
+        'dataset': add_cands[0].get('dataset') if add_cands else None,
+        'sub_xml': ' / '.join(c['sub_xml'] for c in add_cands if c.get('sub_xml')),
+        'original_xml': xml_name,
+        'add_name': add_cands[0]['name'] if add_cands else '',
+        'add_bbox': list(largest['bbox']),
+        'part_bbox': part_bbox,
+        'bbox_in_crop': bbox_in_crop,
+        'detail': {
+            'note': note,
+            'same_iou': same_iou,
+            'contain_ratio': contain_ratio,
+            'dup_iou': args.dup_iou,
+            'pairs': pairs,
+            'different_class_overlaps': diff_notes,
+            'candidates': [{
+                'role': c['role'],
+                'name': c['name'],
+                'bbox': list(c['bbox']),
+                'area': c['area'],
+                'sub_xml': c.get('sub_xml') or '',
+                'sources': list(c.get('sources') or []),
+            } for c in cands],
+        },
+        'options': options,
+    }
+
+
+def _cross_crop_added_review(reps: List[dict], xml_name: str) -> dict:
+    p = reps[0]
+    candidates = []
+    for r in reps:
+        boxes = r.get('bboxes') or [r['add_bbox']]
+        srcs_list = r.get('box_sources') or [r.get('sources') or []]
+        for bbox, srcs in zip(boxes, srcs_list):
+            candidates.append({
+                'sub_xml': ' / '.join(srcs),
+                'name': r['add_name'],
+                'bbox': list(bbox),
+                'merged_from': 1,
+            })
+    return {
+        'reason': 'cross_crop_added_conflict',
+        'dataset': p.get('dataset'),
+        'sub_xml': ' / '.join(r.get('sub_xml') or '' for r in reps),
+        'original_xml': xml_name,
+        'add_name': ' / '.join(r['add_name'] for r in reps),
+        'add_bbox': list(p['add_bbox']),
+        'part_bbox': p.get('part_bbox'),
+        'detail': {
+            'note': '不同类别的新增框重叠。同一类别里未达到同类重叠阈值的框，选中该类别时会一起写入',
+            'candidates': candidates,
+        },
+        'options': added_conflict_options(reps),
+    }
+
+
+def _finish_different_class(items: List[dict], existing: List[Tuple[str, BBox]],
+                            xml_name: str, comp: mc.ComponentConfig, diff_iou: float,
+                            kept: List[dict], reviews: List[dict], stats: Counter) -> None:
+    """异类新增：IoU ≥ diff_iou 进审核；同一类别里没达到同类阈值的框都保留。"""
+    if not items:
+        return
+    groups = mc.cluster_indices(len(items), lambda i, j: (
+        items[i]['sub_xml'] != items[j]['sub_xml']
+        and not classes_match(comp, items[i]['add_name'], items[j]['add_name'])
+        and mc.iou(items[i]['add_bbox'], items[j]['add_bbox']) >= diff_iou
+    ))
+    for idxs in groups:
+        cluster = [items[i] for i in idxs]
+        pending: List[dict] = []
+        by_existing: Dict[Tuple, List[dict]] = defaultdict(list)
+        for item in cluster:
+            hit = _best_different_class_overlap(
+                item['add_bbox'], item['add_name'], existing, comp, diff_iou)
+            if hit is None:
+                pending.append(item)
+            else:
+                by_existing[hit['key']].append(item)
+
+        for key, group_items in by_existing.items():
+            reps = unique_added_by_name(group_items)
+            raw_name, obj_bbox = key
+            score = max(mc.iou(it['add_bbox'], obj_bbox) for it in group_items)
+            reviews.append(_overlap_existing_review(
+                reps, xml_name, raw_name, obj_bbox, score))
+            stats['added_overlaps_existing'] += 1
+
+        if not pending:
+            continue
+        # 已经对过原图框。这里只处理它们彼此之间还剩的异类重叠，避免再递归。
+        sub_groups = mc.cluster_indices(len(pending), lambda i, j: (
+            pending[i]['sub_xml'] != pending[j]['sub_xml']
+            and not classes_match(comp, pending[i]['add_name'], pending[j]['add_name'])
+            and mc.iou(pending[i]['add_bbox'], pending[j]['add_bbox']) >= diff_iou
+        ))
+        for sub in sub_groups:
+            reps = unique_added_by_name([pending[i] for i in sub])
+            if len(reps) <= 1:
+                for rep in reps:
+                    kept.extend(_kept_adds_from_rep(rep))
+            else:
+                reviews.append(_cross_crop_added_review(reps, xml_name))
+                stats['added_conflict'] += 1
+
+
 def resolve_added(proposals: List[dict], index: OriginalIndex,
                   comp: mc.ComponentConfig, args) -> Tuple[List[dict], List[dict], Counter]:
     """
-    新增框去重。必须先跨子图合并，再去对原图已有框：
+    新增框去重。同一张子图内部的重叠框不参与（人工有意画的两个缺陷）。
 
-      1) 不同子图、位置重叠（IoU ≥ dup_iou）的新增先聚类。
-         同类名合成一条；异类名先各留一条代表。
-         同一个子图内部的重叠框不参与去重（人工有意画的两个缺陷）。
-      2) 每个代表再跟原图已有框比：同类名跳过，异类名交人工确认。
-         多个子图叠在同一个原图框上，只出一张审核卡，选 add 也只写一个框。
+      1) 同类，且来自不同子图：IoU ≥ same_iou，或包含率 ≥ contain_ratio，进人工审核。
+         和原图已有同类框达到同样条件的，也进审核，不再直接丢掉新增。
+         方案是只留较大的框、只留较小的框，或两个都留。
+      2) 异类：IoU ≥ dup_iou 才进审核；低于该值的两个都留。
     """
     kept: List[dict] = []
     reviews: List[dict] = []
@@ -715,67 +1101,71 @@ def resolve_added(proposals: List[dict], index: OriginalIndex,
     for p in adds:
         by_xml[p['original_xml']].append(p)
 
+    same_iou = args.same_iou
+    contain_ratio = args.contain_ratio
+    diff_iou = args.dup_iou
+
     for xml_name, items in by_xml.items():
         existing = index.objects.get(xml_name, [])
+        hits = [
+            _best_same_class_existing(
+                item['add_bbox'], item['add_name'], existing, comp, same_iou, contain_ratio)
+            for item in items
+        ]
 
-        groups = mc.cluster_indices(len(items), lambda i, j: (
-            items[i]['sub_xml'] != items[j]['sub_xml']
-            and mc.iou(items[i]['add_bbox'], items[j]['add_bbox']) >= args.dup_iou
-        ))
+        def _same_link(i: int, j: int, _items=items, _hits=hits) -> bool:
+            if _items[i]['sub_xml'] == _items[j]['sub_xml']:
+                return False
+            if not classes_match(comp, _items[i]['add_name'], _items[j]['add_name']):
+                return False
+            if same_class_conflict(_items[i]['add_bbox'], _items[j]['add_bbox'],
+                                   same_iou, contain_ratio):
+                return True
+            hi, hj = _hits[i], _hits[j]
+            return bool(hi and hj and hi['key'] == hj['key'])
 
-        for idxs in groups:
-            cluster = [items[i] for i in idxs]
-            names = {c['add_name'] for c in cluster}
-            if len(cluster) > 1 and len(names) == 1:
-                stats['added_merged_across_crops'] += len(cluster) - 1
-
-            reps = unique_added_by_name(cluster)
-            leftover: List[dict] = []
-            by_existing: Dict[Tuple[str, BBox], List[Tuple[dict, float]]] = defaultdict(list)
-
-            for rep in reps:
-                hit, score = _best_existing_overlap(
-                    tuple(rep['add_bbox']), existing, args.dup_iou)
+        consumed = [False] * len(items)
+        for idxs in mc.cluster_indices(len(items), _same_link):
+            group_hits = [hits[i] for i in idxs]
+            if len(idxs) == 1 and group_hits[0] is None:
+                continue
+            best_hit = None
+            for hit in group_hits:
                 if hit is None:
-                    leftover.append(rep)
                     continue
-                raw_name, obj_bbox = hit
-                if comp.map_name(raw_name) == rep['add_name'] or raw_name == rep['add_name']:
-                    stats['added_skipped_same_class'] += 1
+                rank = (hit['containment'], hit['iou'])
+                if best_hit is None or rank > best_hit[0]:
+                    best_hit = (rank, hit)
+            review = _same_class_review(
+                [items[i] for i in idxs],
+                None if best_hit is None else best_hit[1],
+                xml_name, existing, comp, args)
+            others = []
+            seen = set()
+            if best_hit is not None:
+                seen.add(best_hit[1]['key'])
+            for hit in group_hits:
+                if hit is None or hit['key'] in seen:
                     continue
-                by_existing[(raw_name, tuple(obj_bbox))].append((rep, score))
-
-            for (raw_name, obj_bbox), group in by_existing.items():
-                group_reps = [r for r, _ in group]
-                iou_score = max(s for _, s in group)
-                reviews.append(_overlap_existing_review(
-                    group_reps, xml_name, raw_name, obj_bbox, iou_score))
-                stats['added_overlaps_existing'] += 1
-
-            if len(leftover) == 1:
-                kept.append(_kept_add_from_rep(leftover[0]))
-            elif len(leftover) > 1:
-                p = leftover[0]
-                reviews.append({
-                    'reason': 'cross_crop_added_conflict',
-                    'dataset': p['dataset'],
-                    'sub_xml': ' / '.join(r['sub_xml'] for r in leftover),
-                    'original_xml': xml_name,
-                    'add_name': ' / '.join(r['add_name'] for r in leftover),
-                    'add_bbox': list(p['add_bbox']),
-                    'part_bbox': p.get('part_bbox'),
-                    'detail': {
-                        'note': '同类名已按类别合并，方案是不重复类别的组合，不会重复写框',
-                        'candidates': [{
-                            'sub_xml': ' / '.join(r['sources']),
-                            'name': r['add_name'],
-                            'bbox': r['add_bbox'],
-                            'merged_from': r['merged_from'],
-                        } for r in leftover],
-                    },
-                    'options': added_conflict_options(leftover),
+                seen.add(hit['key'])
+                others.append({
+                    'name': hit['name'],
+                    'bbox': list(hit['bbox']),
+                    'iou': round(hit['iou'], 4),
+                    'containment': round(hit['containment'], 4),
                 })
-                stats['added_conflict'] += 1
+            if others:
+                review['detail']['other_existing'] = others
+                review['detail']['note'] += (
+                    ' 另外的同类原图框也达到阈值，没有放进方案，它们保持不动。')
+            reviews.append(review)
+            stats['same_class_overlap_to_review'] += 1
+            for i in idxs:
+                consumed[i] = True
+
+        leftovers = [items[i] for i in range(len(items)) if not consumed[i]]
+        _finish_different_class(
+            leftovers, existing, xml_name, comp, diff_iou, kept, reviews, stats)
 
     return kept, reviews, stats
 
@@ -882,7 +1272,9 @@ def write_report(path: str, args, comp: mc.ComponentConfig, totals: Counter,
     add(f'子图 XML 目录 : {args.sub_annotations}')
     add(f'原图 XML 目录 : {args.original_xml}')
     add(f'历史台账      : {args.ledger}')
-    add(f'配对 IoU 阈值 : {args.pair_iou}   去重 IoU 阈值: {args.dup_iou}')
+    add(f'配对 IoU 阈值 : {args.pair_iou}')
+    add(f'异类去重 IoU  : {args.dup_iou}   同类重叠 IoU: {args.same_iou}'
+        f'   包含率: {args.contain_ratio}')
     add(f'贴边容差      : {args.border_tol} px   取整噪声容差: {args.noise_tolerance} px')
     add(f'一致性模式    : {"严格" if args.strict_consistency else "宽松（修改优先于未改动）"}')
     add('')
@@ -910,9 +1302,11 @@ def write_report(path: str, args, comp: mc.ComponentConfig, totals: Counter,
     add('三、去重与合并')
     add('-' * 72)
     for key in ('multi_crop_groups', 'cross_crop_merged', 'modify_over_keep',
-                'added_skipped_same_class', 'added_merged_across_crops',
+                'same_class_overlap_to_review',
                 'target_resolved_via_ledger', 'ledger_already_applied'):
         add(f'  {key:32s} {totals.get(key, 0)}')
+    add('  同类 IoU≥same_iou 或包含率≥contain_ratio 进审核，不自动合并，也不直接丢弃')
+    add('  异类仍按 dup_iou 进审核；同一张子图内部的重叠框不去重')
     add('')
 
     add('-' * 72)
@@ -996,7 +1390,12 @@ def parse_args(argv=None):
     parser.add_argument('--pair-iou', type=float, default=0.5,
                         help='新旧框配对的 IoU 阈值（默认 0.5）')
     parser.add_argument('--dup-iou', type=float, default=0.5,
-                        help='新增框去重的 IoU 阈值（默认 0.5）')
+                        help='异类新增框重叠进审核的 IoU 阈值（默认 0.5）')
+    parser.add_argument('--same-iou', type=float, default=0.3,
+                        help='同类新增框重叠进审核的 IoU 阈值（默认 0.3）')
+    parser.add_argument('--contain-ratio', type=float, default=0.9,
+                        help='同类框包含率（交集/较小框面积）达到该值就进审核，'
+                             '用来抓住大框套小框（默认 0.9）')
     parser.add_argument('--border-tol', type=int, default=2,
                         help='判断框是否贴着裁切边界的容差像素（默认 2）')
     parser.add_argument('--noise-tolerance', type=int, default=2,
@@ -1187,6 +1586,8 @@ def main(argv=None) -> int:
             'ledger': os.path.abspath(args.ledger),
             'pair_iou': args.pair_iou,
             'dup_iou': args.dup_iou,
+            'same_iou': args.same_iou,
+            'contain_ratio': args.contain_ratio,
             'border_tol': args.border_tol,
             'noise_tolerance': args.noise_tolerance,
             'strict_consistency': args.strict_consistency,

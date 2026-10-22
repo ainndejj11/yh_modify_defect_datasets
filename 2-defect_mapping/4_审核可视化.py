@@ -101,6 +101,7 @@ REASON_CN = {
     'added_invalid_bbox': '新增框坐标非法',
     'cross_crop_inconsistent': '多个子图的清洗结果互相矛盾',
     'cross_crop_added_conflict': '多个子图在同一位置新增了不同类别',
+    'same_class_overlap': '同类框重叠或大框套小框',
     'ledger_conflict': '与其他数据集的修改冲突',
     'sub_xml_unreadable': '子图 XML 无法读取',
 }
@@ -527,8 +528,31 @@ def collect_boxes(item: dict) -> List[Tuple[Sequence[int], str, tuple, bool]]:
     elif reason == 'added_overlaps_existing':
         boxes.append((detail.get('existing_bbox', []),
                       f'原图已有: {detail.get("existing_name", "?")}', COLOR_ORIGINAL, False))
-        boxes.append((item['add_bbox'], f'人工新增: {item["add_name"]}',
-                      COLOR_PROPOSED, False))
+        cands = detail.get('candidates') or []
+        if cands:
+            for cand in cands:
+                boxes.append((cand.get('bbox'), f'人工新增: {cand.get("name", "?")}',
+                              COLOR_PROPOSED, False))
+        elif item.get('add_bbox'):
+            boxes.append((item['add_bbox'], f'人工新增: {item["add_name"]}',
+                          COLOR_PROPOSED, False))
+
+    elif reason == 'same_class_overlap':
+        add_i = 0
+        for cand in detail.get('candidates') or []:
+            if cand.get('role') == 'existing':
+                boxes.append((cand.get('bbox'), f'原图已有: {cand.get("name", "?")}',
+                              COLOR_ORIGINAL, False))
+            else:
+                color = COLOR_PROPOSED if add_i == 0 else COLOR_ALT
+                add_i += 1
+                boxes.append((cand.get('bbox'),
+                              f'新增: {cand.get("name", "?")} {cand.get("sub_xml") or ""}',
+                              color, False))
+        for extra in detail.get('other_existing') or []:
+            boxes.append((extra.get('bbox'),
+                          f'另有原图框: {extra.get("name", "?")}（不在方案里）',
+                          COLOR_ALT, True))
 
     elif reason in ('added_out_of_scope', 'added_invalid_bbox'):
         if item.get('add_bbox'):
@@ -806,6 +830,12 @@ def option_marks(option: dict) -> List[Tuple[Optional[list], list, str, bool]]:
         elif act == 'add':
             if nb:
                 marks.append((None, nb, f'新增: {ch.get("new_name", "")}', False))
+        elif act == 'keep':
+            box = tb or nb
+            if box:
+                marks.append((None, box,
+                              f'保留: {ch.get("target_name") or ch.get("new_name", "")}',
+                              False))
         elif nb or tb:
             box = nb or tb
             label = f'采纳后: {ch["new_name"]}' if ch.get('new_name') else '采纳后'
@@ -1549,12 +1579,21 @@ def _modify_outcome(change: dict) -> Tuple:
             tuple(bbox) if bbox else None)
 
 
+def _review_id_set(change: dict) -> set:
+    ids = set(change.get('review_ids') or [])
+    if change.get('review_id') is not None:
+        ids.add(change['review_id'])
+    return ids
+
+
 def dedupe_supplement_changes(xml_name: str, changes: List[dict],
                               stats: Counter, problems: List[str],
                               dup_iou: float = SUPPLEMENT_DUP_IOU) -> List[dict]:
     """
     旧审核队列里，同一位置被多个子图各出一张卡。两张都选 add / retag
-    时会写出重复变更。回灌时再收一次：同类重叠只留一条，retag 后不再加同名框。
+    时会写出重复变更。回灌时再收一次：不同审核条目里的同类重叠只留一条。
+    同一条审核里明确选了「两个都留」的，不在这里合并掉。
+    retag 后不再加同名框。
     """
     if len(changes) <= 1:
         return changes
@@ -1592,6 +1631,7 @@ def dedupe_supplement_changes(xml_name: str, changes: List[dict],
     if adds:
         groups = mc.cluster_indices(len(adds), lambda i, j: (
             adds[i].get('new_name') == adds[j].get('new_name')
+            and not (_review_id_set(adds[i]) & _review_id_set(adds[j]))
             and mc.iou(adds[i].get('new_bbox') or [0, 0, 0, 0],
                        adds[j].get('new_bbox') or [0, 0, 0, 0]) >= dup_iou
         ))
@@ -1660,6 +1700,10 @@ def build_supplement_changeset(review_queue_path: str, decisions: dict,
 
         change = option['change']
         changes = change.get('_multi') or [change]
+        writable = [c for c in changes if c.get('action') != 'keep']
+        if not writable:
+            stats['accepted'] += 1
+            continue
         xml_name = item['original_xml']
         path = os.path.join(original_dir, xml_name)
         if not os.path.exists(path):
@@ -1667,7 +1711,7 @@ def build_supplement_changeset(review_queue_path: str, decisions: dict,
             continue
 
         bucket = files.setdefault(xml_name, {'md5': mc.md5_of(path), 'changes': []})
-        for one in changes:
+        for one in writable:
             entry = {k: v for k, v in one.items() if k != '_multi'}
             entry['review_id'] = item_id
             bucket['changes'].append(entry)

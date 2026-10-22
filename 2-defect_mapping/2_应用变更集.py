@@ -78,6 +78,8 @@ def apply_changes_to_doc(doc: mc.VocXml, changes: List[dict],
     """
     applied = 0
     objects = doc.objects()
+    # keep 表示审核时选择「原图框保持不动」，不写入
+    changes = [c for c in changes if c.get('action') != 'keep']
 
     modify_and_delete = [c for c in changes if c['action'] != ACT_ADD]
     additions = [c for c in changes if c['action'] == ACT_ADD]
