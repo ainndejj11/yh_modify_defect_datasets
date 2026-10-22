@@ -118,14 +118,15 @@ cd /raid/wtj/yh_modify_defect_datasets/2-defect_mapping
 
 python 1_生成变更集.py \
   --dataset-dir /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data \
+  --component-type gd \
   --original-xml /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/全图测试集2026/Annotations \
   --output ./输出/gd_data
 ```
 
+`--component-type` 必填，不看目录名。`gd` 挂点，`jyz` 绝缘子，`gt` 杆塔，`ddx` 导地线，`jc` 基础，`global` 全图。
+
 **自动推断的东西**（不用手写）：
 
-- 部件类型按目录名推断：`dx_data→ddx`、`gd_data→gd`、`gt_data→gt`、`jyz_data→jyz`、`jc_data→jc`，
-推断不出会报错，用 `--component-type` 指定
 - 子图 XML 目录默认 `<dataset-dir>/Annotations`
 - `crop_mapping*.json` 在数据集目录下自动发现（正样本/负样本两个文件都会读）
 - 台账默认放在原图 XML 目录的**上一级**，跟着原图库走。`1_生成变更集.py` **自动检索**这份文件（不存在就当空台账）；不加 `--ledger` 不用手写路径
@@ -555,8 +556,7 @@ gd 的类别映射是多对一不可逆的，`crop_mapping` 里只存了映射�
 如果把缺失当删除，会大规模误删总库标注。
 
 **Q：**`crop_mapping` **里的** `original_img_path` **能用吗？**
-不能。验证集那批记录里写的是 `/raid/datasets_defect_2026/全图测试集/...`，该目录已不存在
-（原图库搬到了 Nas-122）。本工具只用 `original_defect_xml` 这个纯文件名，配合命令行指定的目录。
+审核看图时可以用。`4_审核可视化.py render` 按原图 XML 文件名读取这条路径，文件还在磁盘上就直接打开，原图分散在多个目录时不用搬到一起。路径已经失效（验证集里写的 `/raid/datasets_defect_2026/全图测试集/...` 已搬走）时忽略它，仍用 `--original-images` 按文件名找。生成变更集、写入和回滚不使用这个字段。
 
 **Q：写回映射后的类名（如** `lslmqk`**），下次裁切会不会重复裁出两个框？**
 不会。裁切程序是对每个 `<object>` **逐个就地改名**，一个框永远只产生一个框；而且
@@ -603,7 +603,7 @@ gd 的类别映射是多对一不可逆的，`crop_mapping` 里只存了映射�
 | `--dataset-dir`            | 必填                                 | 子图数据集根目录                             |
 | `--original-xml`           | 必填                                 | 原图缺陷 XML 目录（只读）                      |
 | `--output`                 | 必填                                 | 输出目录                                 |
-| `--component-type`         | 按目录名推断                             | `ddx`/`gt`/`jyz`/`gd`/`jc`/`global`  |
+| `--component-type`         | 必填                                 | `gd` 挂点 / `jyz` 绝缘子 / `gt` 杆塔 / `ddx` 导地线 / `jc` / `global` |
 | `--sub-annotations`        | `<dataset-dir>/Annotations`        | 子图 XML 目录                            |
 | `--crop-mapping`           | 自动发现                               | 可重复指定多个                              |
 | `--config`                 | `../1-crop_defect_new/config.yaml` | 裁切配置                                 |
@@ -659,8 +659,9 @@ gd 的类别映射是多对一不可逆的，`crop_mapping` 里只存了映射�
 | ------------------- | ----------------------- | ------------------------ |
 | `--review-queue`    | 必填                      | `review_queue.json` 路径   |
 | `--output`          | 必填                      | 审核目录输出路径                 |
-| `--original-images` | 必填                      | 原图**图片**目录               |
-| `--dataset-dir`     | 无                       | 子图数据集根目录（用于定位 `images/`） |
+| `--original-images` | 无                       | 原图**图片**目录。JSON 里的路径可用时可以不填；路径失效时按文件名兜底 |
+| `--crop-mapping`    | 自动发现                    | 可重复。默认 `<dataset-dir>/crop_mapping*.json`，否则取 changeset 里记录的路径 |
+| `--dataset-dir`     | 无                       | 子图数据集根目录（用于定位 `images/` 和裁切记录） |
 | `--sub-images`      | `<dataset-dir>/images`  | 子图图片目录                   |
 | `--base-changeset`  | 队列同目录的 `changeset.json` | 用于继承原图目录等 meta           |
 | `--original-xml`    | 取 base-changeset 的 meta | 原图 XML 目录                |

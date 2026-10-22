@@ -32,19 +32,8 @@ import yaml
 
 BBox = Tuple[int, int, int, int]
 
-# 裁切程序支持的部件类型
+# 裁切程序支持的部件类型。必须由 --component-type 指定，不从目录名推断。
 COMPONENT_TYPES = ['ddx', 'gt', 'jyz', 'gd', 'global', 'jc']
-
-# 数据集目录名 -> 部件类型（用于 --component-type 缺省推断）
-DATASET_DIR_TO_TYPE = {
-    'dx_data': 'ddx',
-    'ddx_data': 'ddx',
-    'gt_data': 'gt',
-    'jyz_data': 'jyz',
-    'gd_data': 'gd',
-    'jc_data': 'jc',
-    'global_data': 'global',
-}
 
 
 # ============================================================
@@ -766,11 +755,6 @@ def now_stamp() -> str:
 
 def now_iso() -> str:
     return datetime.now().isoformat(timespec='seconds')
-
-
-def guess_component_type(dataset_dir: str) -> Optional[str]:
-    """根据数据集目录名推断部件类型，推断不出返回 None"""
-    return DATASET_DIR_TO_TYPE.get(Path(dataset_dir).name)
 
 
 def load_json(path: str):

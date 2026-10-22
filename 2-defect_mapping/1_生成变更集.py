@@ -13,9 +13,10 @@
 
 用法示例：
   python 1_生成变更集.py \
-    --dataset-dir /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data \
-    --original-xml "/raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/全图测试集2026/Annotations" \
-    --output ./输出/gd_data
+    --dataset-dir /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/all_datasets/gd_data \
+    --component-type gd \
+    --original-xml /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/兰州_张掖_映射原图xml \
+    --output /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/all_datasets/gd_data/映射原图
 """
 
 from __future__ import annotations
@@ -970,6 +971,7 @@ def parse_args(argv=None):
 示例:
   python 1_生成变更集.py \
     --dataset-dir /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data \
+    --component-type gd \
     --original-xml /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/全图测试集2026/Annotations \
     --output /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data/映射原图过程
 
@@ -980,8 +982,8 @@ def parse_args(argv=None):
     parser.add_argument('--original-xml', required=True,
                         help='原图缺陷 XML 目录（只读）')
     parser.add_argument('--output', required=True, help='输出目录')
-    parser.add_argument('--component-type', default=None, choices=mc.COMPONENT_TYPES,
-                        help='部件类型；缺省时按数据集目录名推断')
+    parser.add_argument('--component-type', required=True, choices=mc.COMPONENT_TYPES,
+                        help='数据集类型：gd 挂点，jyz 绝缘子，gt 杆塔，ddx 导地线，jc 基础，global 全图')
     parser.add_argument('--sub-annotations', default=None,
                         help='子图 XML 目录（默认 <dataset-dir>/Annotations）')
     parser.add_argument('--crop-mapping', action='append', default=None,
@@ -1018,12 +1020,6 @@ def main(argv=None) -> int:
     if not os.path.isdir(args.original_xml):
         print(f'❌ 原图 XML 目录不存在: {args.original_xml}')
         return 1
-
-    if not args.component_type:
-        args.component_type = mc.guess_component_type(dataset_dir)
-        if not args.component_type:
-            print(f'❌ 无法从目录名 "{dataset_dir.name}" 推断部件类型，请显式指定 --component-type')
-            return 1
 
     if not args.sub_annotations:
         args.sub_annotations = str(dataset_dir / 'Annotations')

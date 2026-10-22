@@ -17,11 +17,14 @@
 
 用法：
   # 渲染完直接起服务（远程审核推荐一步到位）
+    #   --original-images ，如果json里的原图路径失效，增加该参数，指定原图路径
   python 4_审核可视化.py render \
-    --review-queue /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data/映射原图过程/review_queue.json \
-    --dataset-dir /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data \
-    --original-images /raid/Nas-122/项目数据/输电项目/缺陷/标记样本库/全图测试集2026/images \
-    --output /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data/映射原图过程 --serve
+    --review-queue /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/all_datasets/gd_data/映射原图/review_queue.json \
+    --dataset-dir /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/all_datasets/gd_data \
+    --output /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/all_datasets/gd_data/映射原图 --serve
+
+  原图分散在多个目录时不用搬图：crop_mapping 里的 original_img_path
+  指向的文件还在，就直接打开。路径已失效时，仍用 --original-images 兜底。
 
 
   # 之后想重新打开审核页面
@@ -140,6 +143,88 @@ def find_image(directory: str, stem: str) -> Optional[str]:
         if os.path.isfile(candidate):
             return candidate
     return None
+
+
+def resolve_crop_mapping_paths(args) -> List[str]:
+    """
+    定位 crop_mapping。显式 --crop-mapping 优先，其次数据集目录下自动发现，
+    最后用 changeset.json 的 meta 里记录的路径。都没有就返回空列表。
+    """
+    if args.crop_mapping:
+        return list(args.crop_mapping)
+    if args.dataset_dir:
+        found = sorted(Path(args.dataset_dir).glob('crop_mapping*.json'))
+        if found:
+            return [str(p) for p in found]
+    base = args.base_changeset
+    if not base:
+        candidate = os.path.join(os.path.dirname(os.path.abspath(args.review_queue)),
+                                 'changeset.json')
+        if os.path.isfile(candidate):
+            base = candidate
+    if base and os.path.isfile(base):
+        try:
+            meta = mc.load_json(base).get('meta') or {}
+        except Exception:
+            meta = {}
+        recorded = [p for p in (meta.get('crop_mapping') or []) if isinstance(p, str) and p]
+        if recorded:
+            return recorded
+    return []
+
+
+def build_original_image_index(mapping_paths: Sequence[str],
+                               needed: set) -> Tuple[Dict[str, str], Counter]:
+    """
+    按原图 XML 文件名索引 crop_mapping 里的 original_img_path。
+
+    只收录「审核队列用得到、并且文件现在还在」的路径。
+    记录里的路径已经搬走时不收录，调用方继续用 --original-images。
+    同一个 XML 对应多张都存在、且路径不同的原图时视为冲突，也不收录。
+    """
+    stats: Counter = Counter()
+    found: Dict[str, set] = {}
+    for path in mapping_paths:
+        raw = mc.load_json(path)
+        stats['files'] += 1
+        if not isinstance(raw, dict):
+            continue
+        for entry in raw.values():
+            if not isinstance(entry, dict):
+                continue
+            xml_name = entry.get('original_defect_xml')
+            if not xml_name or xml_name not in needed:
+                continue
+            img = entry.get('original_img_path')
+            if not isinstance(img, str) or not img.strip():
+                stats['missing_field'] += 1
+                continue
+            found.setdefault(xml_name, set()).add(os.path.abspath(img.strip()))
+        del raw
+
+    index: Dict[str, str] = {}
+    for xml_name, paths in found.items():
+        existing = [p for p in paths if os.path.isfile(p)]
+        if len(existing) == 1:
+            index[xml_name] = existing[0]
+            stats['hit'] += 1
+        elif len(existing) > 1:
+            stats['conflict'] += 1
+            if stats['conflict'] <= 5:
+                stats[f'conflict_name:{xml_name}'] += 1
+        else:
+            stats['stale'] += 1
+    return index, stats
+
+
+def locate_original_image(item: dict, image_index: Dict[str, str],
+                          original_images: str) -> Optional[str]:
+    """优先用裁切记录里的原图路径，文件不在时再按文件名到单个目录里找"""
+    xml_name = item.get('original_xml') or ''
+    mapped = image_index.get(xml_name)
+    if mapped and os.path.isfile(mapped):
+        return mapped
+    return find_image(original_images, os.path.splitext(xml_name)[0])
 
 
 def _wrap_text(text: str, font, max_width: int) -> List[str]:
@@ -667,13 +752,13 @@ def render_sub_view(item: dict, sub_images: str, out_dir: str,
 
 def render_item(item: dict, original_images: str, sub_images: str,
                 out_dir: str, margin: float,
-                max_height: int = 900, quality: int = 82) -> List[dict]:
+                max_height: int = 900, quality: int = 82,
+                image_index: Optional[Dict[str, str]] = None) -> List[dict]:
     """
     渲染一条待确认项的三张图，各存一个文件、页面上并排显示、可各自放大：
     全图定位 / 原图局部 / 子图。返回 [{'title', 'path'}, ...]。
     """
-    original_stem = os.path.splitext(item['original_xml'])[0]
-    original_path = find_image(original_images, original_stem)
+    original_path = locate_original_image(item, image_index or {}, original_images)
     if original_path is None:
         return []
     try:
@@ -803,13 +888,13 @@ def render_option_image(item: dict, option: dict, base, out_dir: str,
 
 
 def render_option_images(item: dict, original_images: str, out_dir: str,
-                         quality: int = 82) -> None:
+                         quality: int = 82,
+                         image_index: Optional[Dict[str, str]] = None) -> None:
     """为每个决策方案渲染独立效果图，路径写回 option['_image']"""
     options = item.get('options') or []
     if not options:
         return
-    original_stem = os.path.splitext(item['original_xml'])[0]
-    original_path = find_image(original_images, original_stem)
+    original_path = locate_original_image(item, image_index or {}, original_images)
     if not original_path:
         return
     try:
@@ -1353,6 +1438,41 @@ def cmd_render(args) -> int:
         print(f'按原因过滤后剩余 {len(items)} 条')
     if args.limit:
         items = items[:args.limit]
+    if not items:
+        print('过滤后没有待确认条目。')
+        return 0
+
+    original_images = args.original_images or ''
+    if original_images and not os.path.isdir(original_images):
+        print(f'❌ 原图图片目录不存在: {original_images}')
+        return 1
+
+    mapping_paths = resolve_crop_mapping_paths(args)
+    missing_mappings = [p for p in mapping_paths if not os.path.isfile(p)]
+    if missing_mappings:
+        print('❌ 裁切记录不存在:')
+        for path in missing_mappings[:10]:
+            print(f'    {path}')
+        return 1
+
+    needed = {it.get('original_xml') for it in items if it.get('original_xml')}
+    image_index: Dict[str, str] = {}
+    if mapping_paths and needed:
+        print(f'从裁切记录读取原图路径（{len(mapping_paths)} 个文件）...')
+        image_index, img_stats = build_original_image_index(mapping_paths, needed)
+        print(f'  待审核原图     : {len(needed)}')
+        print(f'  JSON 路径可用  : {img_stats["hit"]}')
+        print(f'  JSON 路径已失效: {img_stats["stale"]}')
+        print(f'  同名多路径冲突 : {img_stats["conflict"]}')
+        for key in img_stats:
+            if key.startswith('conflict_name:'):
+                print(f'    冲突: {key.split(":", 1)[1]}')
+    if not image_index and not original_images:
+        print('❌ 没有可用的原图。请提供带 original_img_path 的 crop_mapping，或指定 --original-images')
+        return 1
+    if image_index and not original_images and len(image_index) < len(needed):
+        print(f'  ⚠️  还有 {len(needed) - len(image_index)} 张原图在 JSON 里没有可用路径，'
+              f'又没指定 --original-images，这些条目的原图会渲染失败')
 
     print(f'开始渲染 {len(items)} 条待确认项 ...')
     rendered = failed = 0
@@ -1360,9 +1480,11 @@ def cmd_render(args) -> int:
         if i % 200 == 0:
             print(f'  {i}/{len(items)}')
         try:
-            panels = render_item(item, args.original_images, sub_images, out_dir,
-                                 args.margin, args.max_height, args.quality)
-            render_option_images(item, args.original_images, out_dir, args.quality)
+            panels = render_item(item, original_images, sub_images, out_dir,
+                                 args.margin, args.max_height, args.quality,
+                                 image_index)
+            render_option_images(item, original_images, out_dir, args.quality,
+                                 image_index)
         except Exception as exc:
             panels = []
             if failed < 5:
@@ -1939,9 +2061,13 @@ def main(argv=None) -> int:
     p_render = sub.add_parser('render', help='渲染对比图并生成审核页面')
     p_render.add_argument('--review-queue', required=True, help='review_queue.json 路径')
     p_render.add_argument('--output', required=True, help='输出目录')
-    p_render.add_argument('--original-images', required=True, help='原图图片目录')
+    p_render.add_argument('--original-images', default=None,
+                          help='原图图片目录。crop_mapping 里的原图路径可用时可以不填；'
+                               '路径已失效时用这个目录按文件名兜底')
+    p_render.add_argument('--crop-mapping', action='append', default=None,
+                          help='crop_mapping json，可重复指定；默认从数据集目录或 changeset 里找')
     p_render.add_argument('--dataset-dir', default=None,
-                          help='子图数据集根目录（用于定位 images/）')
+                          help='子图数据集根目录（用于定位 images/ 和 crop_mapping*.json）')
     p_render.add_argument('--sub-images', default=None,
                           help='子图图片目录（默认 <dataset-dir>/images）')
     p_render.add_argument('--dataset', default=None, help='数据集名称，用于页面标题')

@@ -34,7 +34,7 @@ DEFAULT_OUTPUT_DIR = f"/raid/Nas-123/原始巡检数据库/输电项目_新增�
 
 stat_lock = threading.Lock()
 class_counter = Counter()
-saved_count = 0
+saved_count = 0 
 skip_no_component = 0
 skip_no_image = 0
 fail_count = 0
