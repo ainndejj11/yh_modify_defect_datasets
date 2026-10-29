@@ -19,9 +19,9 @@
   # 渲染完直接起服务（远程审核推荐一步到位）
     #   --original-images ，如果json里的原图路径失效，增加该参数，指定原图路径
   python 4_审核可视化.py render \
-    --review-queue /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/all_datasets/gd_data/映射原图/review_queue.json \
-    --dataset-dir /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/all_datasets/gd_data \
-    --output /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/all_datasets/gd_data/映射原图 --serve
+    --review-queue /raid/wtj/甘肃新增训练集/gd_data/映射原图/review_queue.json \
+    --dataset-dir /raid/wtj/甘肃新增训练集/gd_data \
+    --output /raid/wtj/甘肃新增训练集/gd_data/映射原图 --serve
 
   原图分散在多个目录时不用搬图：crop_mapping 里的 original_img_path
   指向的文件还在，就直接打开。路径已失效时，仍用 --original-images 兜底。
