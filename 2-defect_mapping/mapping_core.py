@@ -299,6 +299,9 @@ class VocXml:
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
+            # mkstemp 固定创建为 0600。os.replace 会用临时文件的权限替换原文件，
+            # 全图库多人共用，写回后必须所有人可读写，不能收成仅当前用户。
+            os.chmod(tmp_path, 0o666)
             os.replace(tmp_path, target)
         finally:
             if os.path.exists(tmp_path):
