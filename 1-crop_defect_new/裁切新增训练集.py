@@ -5,8 +5,8 @@
 不判断缺陷，按 config.yaml 里指定的部件类型（ddx / gt / jyz / gd 等）
 裁出该类型的全部部件子图。部件类别和扩充比例都从对应配置段读取。
 
-直接指定两个原图目录，各自使用同级 xmls，不递归子目录。
-所有子图写入同一个保存目录，裁切记录汇总进一个 crop_mapping_<类型>.json。
+直接指定原图目录和部件 XML 目录，不递归子目录。
+所有子图写入同一个保存目录，裁切记录写到该目录上一层的 crop_mapping_<类型>.json。
 每条记录里的 original_img_path 是对应原图的完整路径。
 """
 import argparse
@@ -27,10 +27,12 @@ IMAGE_EXTS = (".jpg", ".JPG", ".jpeg", ".JPEG", ".png", ".PNG", ".bmp", ".BMP")
 
 DEFAULT_COMPONENT_TYPE = "gd"  # config.yaml 里的段名：ddx / gt / jyz / gd 
 DEFAULT_IMAGES_DIRS = [
-    "/raid/Nas-123/原始巡检数据库/输电项目_新增训练集/张掖/images",
-    "/raid/Nas-123/原始巡检数据库/输电项目_新增训练集/兰州/images",
+    "/raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/images汇总",
 ]
-DEFAULT_OUTPUT_DIR = f"/raid/Nas-123/原始巡检数据库/输电项目_新增训练集/all_datasets/{DEFAULT_COMPONENT_TYPE}_data"
+DEFAULT_XML_DIRS = [
+    "/raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/部件xmls",
+]
+DEFAULT_OUTPUT_DIR = f"/raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/all_datasets/{DEFAULT_COMPONENT_TYPE}_data/images"
 
 stat_lock = threading.Lock()
 class_counter = Counter()
@@ -234,12 +236,10 @@ def process_one(xml_path, image_index, out_dir, component_type, component_classe
 
 
 def mapping_json_path(output_dir, component_type):
-    """子图在 images/ 下时，映射文件放在其上一级，文件名带部件类型。"""
+    """映射文件放在子图目录的上一层，文件名带部件类型。"""
     filename = f"crop_mapping_{component_type}.json"
     output_dir = os.path.normpath(output_dir)
-    if os.path.basename(output_dir) == "images":
-        return os.path.join(os.path.dirname(output_dir), filename)
-    return os.path.join(output_dir, filename)
+    return os.path.join(os.path.dirname(output_dir), filename)
 
 
 def main():
@@ -260,8 +260,8 @@ def main():
     parser.add_argument(
         "--xml-dir",
         nargs="*",
-        default=None,
-        help="部件XML目录，与图片目录一一对应。不传则使用每个图片目录同级的 xmls",
+        default=DEFAULT_XML_DIRS,
+        help="部件XML目录，与图片目录一一对应。不传则使用 DEFAULT_XML_DIRS",
     )
     parser.add_argument("--output", default=DEFAULT_OUTPUT_DIR, help="子图保存目录")
     parser.add_argument(
