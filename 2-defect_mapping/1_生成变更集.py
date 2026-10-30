@@ -13,10 +13,10 @@
 
 用法示例：
   python 1_生成变更集.py \
-    --dataset-dir /raid/wtj/甘肃新增训练集/gd_data \
+    --dataset-dir /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/all_datasets/gd_data \
     --component-type gd \
-    --original-xml /raid/wtj/甘肃新增训练集/酒泉_天水_庆阳_映射原图xml \
-    --output /raid/wtj/甘肃新增训练集/gd_data/映射原图
+    --original-xml /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/甘肃测试集_映射原图xml   \
+    --output /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/all_datasets/gd_data/映射原图
 """
 
 from __future__ import annotations

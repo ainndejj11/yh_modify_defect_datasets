@@ -19,9 +19,9 @@
   # 渲染完直接起服务（远程审核推荐一步到位）
     #   --original-images ，如果json里的原图路径失效，增加该参数，指定原图路径
   python 4_审核可视化.py render \
-    --review-queue /raid/wtj/甘肃新增训练集/gd_data/映射原图/review_queue.json \
-    --dataset-dir /raid/wtj/甘肃新增训练集/gd_data \
-    --output /raid/wtj/甘肃新增训练集/gd_data/映射原图 --serve
+    --review-queue /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/all_datasets/gd_data/映射原图/review_queue.json \
+    --dataset-dir /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/all_datasets/gd_data \
+    --output /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/all_datasets/gd_data/映射原图 --serve
 
   原图分散在多个目录时不用搬图：crop_mapping 里的 original_img_path
   指向的文件还在，就直接打开。路径已失效时，仍用 --original-images 兜底。
@@ -42,6 +42,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import http.server
 import json
@@ -1063,8 +1064,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 <script>
 const DATA = __DATA__;
 const DATASET = __DATASET_JSON__;
+const QUEUE_ID = __QUEUE_ID__;
 const IMG_V = '__IMG_V__';
-const KEY = 'defect_mapping_decisions_' + DATASET;
+// 键必须带本次队列标识。只按数据集名存的话，队列重新生成后编号从 0 再排，
+// 上一批决策会套到完全不同的条目上。
+const KEY = 'defect_mapping_decisions_' + DATASET + '_' + QUEUE_ID;
 function imgSrc(p){
   if(!p) return '';
   return p + (p.indexOf('?') >= 0 ? '&' : '?') + 'v=' + IMG_V;
@@ -1104,10 +1108,26 @@ function offlineMode(reason){
   btn.title = '需要连接服务器才能直接生成补充变更集';
 }
 
+// 只留下当前页面这些条目的决策。多出来的编号不显示，也不写回服务器。
+function keepCurrent(src){
+  const allow = {};
+  DATA.forEach(it => { allow[String(it.id)] = true; });
+  const out = {};
+  if(!src || typeof src !== 'object') return out;
+  Object.keys(src).forEach(k => {
+    const v = src[k];
+    if(allow[String(k)] && typeof v === 'string' && v) out[String(k)] = v;
+  });
+  return out;
+}
+
 // 关键：先用本地决策把列表画出来，再去后台探测服务器。
 // 绝不能让内容的显示依赖网络请求，否则服务端一慢，整个页面就是空白。
 function boot(){
-  decisions = JSON.parse(localStorage.getItem(KEY) || '{}');
+  let stored = {};
+  try { stored = JSON.parse(localStorage.getItem(KEY) || '{}'); }
+  catch(e) { stored = {}; }
+  decisions = keepCurrent(stored);
   render();
   probeServer();
 }
@@ -1132,33 +1152,42 @@ async function probeServer(){
     btn.title = '原图 XML 目录不可用: ' + info.original_xml_dir;
   }
 
-  // 服务端的决策才是权威版本，拉回来后合并并重画选中状态
+  // 服务端的决策才是权威版本，但必须是这一批队列的。对不上就空着，绝不能套用上一批。
   try{
     const r = await fetchTimeout('api/decisions', {}, 10000);
     const d = await r.json();
-    const remote = d.decisions || {};
-    const localCount = Object.keys(decisions).length;
+    if(!r.ok || !d.ok || d.queue_id !== QUEUE_ID){
+      toast('服务器队列与当前页面不一致，不会读取或覆盖那里的决策', 6000);
+      refresh();
+      return;
+    }
+    if(d.ignored_other_queue){
+      toast('上一批队列的决策已隔开，不会计入本次进度', 5000);
+    }
+    const remote = keepCurrent(d.decisions || {});
+    const local = keepCurrent(decisions);
     const remoteCount = Object.keys(remote).length;
+    const localCount = Object.keys(local).length;
     if(remoteCount || !localCount){
       decisions = remote;
-      applyChecked();
       refresh();
-      if(remoteCount) toast(`已从服务器载入 ${remoteCount} 条既有决策`, 3000);
+      if(remoteCount) toast(`已从服务器载入 ${remoteCount} 条本次队列的决策`, 3000);
     }else if(localCount){
-      // 本地有、服务端没有：把本地的推上去，避免丢失
+      // 本地有、服务端这一批还没有：只把本队列的决策推上去
+      decisions = local;
       save();
-      toast(`已把本浏览器的 ${localCount} 条决策同步到服务器`, 4000);
+      toast(`已把本浏览器的 ${localCount} 条本次队列决策同步到服务器`, 4000);
     }
   }catch(e){
     toast('读取服务器决策失败：' + e.message, 6000);
   }
 }
 
-function applyChecked(){ refresh(); }
-
 let saveTimer = null;
 function save(){
-  localStorage.setItem(KEY, JSON.stringify(decisions));
+  const snap = keepCurrent(decisions);
+  decisions = snap;
+  localStorage.setItem(KEY, JSON.stringify(snap));
   refresh();
   if(!serverOn) return;
   document.getElementById('saveHint').textContent = '保存中…';
@@ -1167,10 +1196,15 @@ function save(){
     try{
       const r = await fetchTimeout('api/decisions', {
         method:'POST', headers:{'Content-Type':'application/json'},
-        body: JSON.stringify({decisions: decisions})
+        body: JSON.stringify({decisions: snap, queue_id: QUEUE_ID})
       }, 10000);
       const j = await r.json();
-      document.getElementById('saveHint').textContent = j.ok ? '已保存 ✓' : '保存失败!';
+      if(!r.ok || !j.ok){
+        document.getElementById('saveHint').textContent = '保存失败!';
+        toast('决策保存失败：' + (j.error || ('HTTP ' + r.status)), 6000);
+      }else{
+        document.getElementById('saveHint').textContent = '已保存 ✓';
+      }
     }catch(e){
       document.getElementById('saveHint').textContent = '保存失败!';
       toast('决策保存到服务器失败：' + e.message
@@ -1198,7 +1232,7 @@ async function buildChangeset(){
   try{
     const r = await fetchTimeout('api/build-changeset', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({decisions: decisions})
+      body: JSON.stringify({decisions: keepCurrent(decisions), queue_id: QUEUE_ID})
     }, 180000);
     const j = await r.json();
     if(j.ok){
@@ -1214,8 +1248,9 @@ async function buildChangeset(){
 }
 
 function exportJSON(){
-  const out = { dataset: DATASET, exported_at: new Date().toISOString(),
-                decisions: decisions };
+  const out = { dataset: DATASET, queue_id: QUEUE_ID,
+                exported_at: new Date().toISOString(),
+                decisions: keepCurrent(decisions) };
   const blob = new Blob([JSON.stringify(out, null, 2)], {type:'application/json'});
   const a = document.createElement('a');
   a.href = URL.createObjectURL(blob);
@@ -1303,7 +1338,8 @@ function render(){
 }
 
 function refresh(){
-  const done = Object.keys(decisions).length;
+  let done = 0;
+  DATA.forEach(it => { if(decisions[it.id]) done++; });
   document.getElementById('progress').textContent = `已决策 ${done} / ${DATA.length}`;
   const f = document.getElementById('filter').value;
   DATA.forEach((it, idx) => {
@@ -1375,7 +1411,109 @@ boot();
 """
 
 
-def build_html(items: List[dict], dataset: str, out_dir: str) -> str:
+def queue_fingerprint(items: Sequence[dict]) -> str:
+    """本次审核队列的稳定标识。
+
+    条目编号每次生成都会从 0 重新排，不能拿数据集名或编号当决策归属。
+    标识只含条目身份（编号、原因、原图、框、方案键），不含渲染图路径。
+    同一批条目重新渲染，标识不变，决策可以接着用；队列内容一变，标识就变。
+    """
+    rows = []
+    for item in items:
+        rows.append({
+            'id': item.get('id'),
+            'reason': item.get('reason'),
+            'original_xml': item.get('original_xml'),
+            'sub_xml': item.get('sub_xml'),
+            'target_name_raw': item.get('target_name_raw'),
+            'target_name_mapped': item.get('target_name_mapped'),
+            'target_bbox': item.get('target_bbox'),
+            'add_name': item.get('add_name'),
+            'add_bbox': item.get('add_bbox'),
+            'options': [o.get('key') for o in (item.get('options') or [])],
+        })
+    blob = json.dumps(rows, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+    return hashlib.sha256(blob.encode('utf-8')).hexdigest()[:16]
+
+
+def filter_decisions(decisions: dict, item_ids: Sequence) -> dict:
+    """只保留属于当前队列条目的决策。键统一成字符串，空值丢掉。"""
+    allow = {str(i) for i in item_ids}
+    if not isinstance(decisions, dict):
+        return {}
+    out = {}
+    for key, val in decisions.items():
+        if str(key) not in allow:
+            continue
+        if not isinstance(val, str) or not val:
+            continue
+        out[str(key)] = val
+    return out
+
+
+def bind_decisions(decisions_path: str, items: Sequence[dict]) -> Tuple[dict, int]:
+    """读决策文件，并确认它就是这一批队列的。对不上就拒绝，避免旧编号套新条目。"""
+    raw = mc.load_json(decisions_path)
+    if not isinstance(raw, dict) or not isinstance(raw.get('decisions'), dict):
+        raise ValueError('decisions.json 里没有 decisions 字段，无法确认它属于哪一批队列')
+    expected = queue_fingerprint(items)
+    if raw.get('queue_id') != expected:
+        raise ValueError(
+            '这份决策不属于当前待确认队列，已拒绝生成补充变更集。'
+            '队列重新生成后条目会从 0 重新编号，不能把上一批选择套过来。'
+            '请在本次审核页面里重新决策。')
+    filtered = filter_decisions(raw['decisions'], [it['id'] for it in items])
+    return filtered, len(raw['decisions']) - len(filtered)
+
+
+def archive_foreign_decisions(path: Path, expected: str) -> Optional[Path]:
+    """队列对不上的决策文件改名留档。属于本队列则原样保留。"""
+    path = Path(path)
+    if not path.is_file():
+        return None
+    stored = None
+    try:
+        raw = json.loads(path.read_text(encoding='utf-8'))
+        if isinstance(raw, dict):
+            stored = raw.get('queue_id')
+    except Exception:
+        stored = None
+    if stored == expected:
+        return None
+    stamp = time.strftime('%Y%m%d_%H%M%S')
+    tag = re.sub(r'[^0-9A-Za-z_-]', '', str(stored or 'unbound'))[:32] or 'unbound'
+    dest = path.with_name(f'{path.stem}_{tag}_{stamp}{path.suffix}')
+    n = 0
+    while dest.exists():
+        n += 1
+        dest = path.with_name(f'{path.stem}_{tag}_{stamp}_{n}{path.suffix}')
+    os.replace(str(path), str(dest))
+    print(f'[审核服务] 既有决策不属于本次队列，已留档为 {dest.name}，未并入当前进度')
+    return dest
+
+
+def warn_unrelated_decisions(decisions_path: str, queue_id: str) -> None:
+    if not os.path.isfile(decisions_path):
+        return
+    try:
+        raw = json.loads(Path(decisions_path).read_text(encoding='utf-8'))
+    except Exception as exc:
+        print(f'  注意: 现有决策文件无法读取（{exc}），页面不会使用它')
+        return
+    if not isinstance(raw, dict):
+        print('  注意: 现有决策文件格式不对，页面不会使用它')
+        return
+    stored = raw.get('decisions') if isinstance(raw.get('decisions'), dict) else {}
+    if not stored:
+        return
+    if raw.get('queue_id') == queue_id:
+        print(f'  本次队列已有决策 {len(stored)} 条，打开页面会接着用')
+        return
+    print(f'  注意: 目录里已有 {len(stored)} 条决策不属于本次队列，'
+          f'页面不会加载，也不会算进进度')
+
+
+def build_html(items: List[dict], dataset: str, out_dir: str, queue_id: str) -> str:
     slim = []
     for item in items:
         slim.append({
@@ -1402,8 +1540,9 @@ def build_html(items: List[dict], dataset: str, out_dir: str) -> str:
         f'（{n}）</option>' for r, n in counts.most_common())
 
     page = (HTML_TEMPLATE
-            .replace('__DATA__', json.dumps(slim, ensure_ascii=False))
+            .replace('__QUEUE_ID__', json.dumps(queue_id, ensure_ascii=False))
             .replace('__DATASET_JSON__', json.dumps(dataset, ensure_ascii=False))
+            .replace('__DATA__', json.dumps(slim, ensure_ascii=False))
             .replace('__DATASET__', html.escape(dataset))
             .replace('__COUNT__', str(len(items)))
             .replace('__REASON_OPTIONS__', reason_options)
@@ -1525,16 +1664,19 @@ def cmd_render(args) -> int:
         else:
             failed += 1
 
-    path = build_html(items, args.dataset or (dataset_dir.name if dataset_dir else 'review'),
-                      out_dir)
+    dataset_name = args.dataset or (dataset_dir.name if dataset_dir else 'review')
+    queue_id = queue_fingerprint(items)
+    path = build_html(items, dataset_name, out_dir, queue_id)
 
     # 写出审核上下文，serve 子命令据此定位队列、基础变更集和原图目录
     context = resolve_review_context(args.review_queue, args.base_changeset,
                                      args.original_xml)
     context['created_at'] = mc.now_iso()
+    context['queue_id'] = queue_id
+    context['item_ids'] = [item['id'] for item in items]
     context['decisions'] = os.path.join(os.path.abspath(out_dir), 'decisions.json')
     if not context.get('dataset'):
-        context['dataset'] = args.dataset or (dataset_dir.name if dataset_dir else 'review')
+        context['dataset'] = dataset_name
     mc.dump_json(context, os.path.join(out_dir, 'review_meta.json'))
 
     counter = Counter(item['reason'] for item in items)
@@ -1543,6 +1685,8 @@ def cmd_render(args) -> int:
     for reason, count in counter.most_common():
         print(f'  {reason:32s} {count}')
     print(f'\n审核页面: {path}')
+    print(f'队列标识: {queue_id}')
+    warn_unrelated_decisions(context['decisions'], queue_id)
 
     if args.serve:
         return serve_review(out_dir, host=args.host, port=args.port,
@@ -1745,8 +1889,12 @@ def build_supplement_changeset(review_queue_path: str, decisions: dict,
 
 
 def cmd_build_changeset(args) -> int:
-    raw = mc.load_json(args.decisions)
-    decisions = raw.get('decisions', raw)
+    items = mc.load_json(args.review_queue)
+    try:
+        decisions, dropped = bind_decisions(args.decisions, items)
+    except ValueError as exc:
+        print(f'❌ {exc}')
+        return 1
 
     base_meta = {}
     original_dir = args.original_xml
@@ -1755,7 +1903,8 @@ def cmd_build_changeset(args) -> int:
         base_meta = base.get('meta', {})
         original_dir = original_dir or base_meta.get('original_xml_dir')
     if not base_meta.get('dataset'):
-        base_meta['dataset'] = raw.get('dataset')
+        raw_meta = mc.load_json(args.decisions)
+        base_meta['dataset'] = raw_meta.get('dataset') if isinstance(raw_meta, dict) else None
 
     if not original_dir or not os.path.isdir(original_dir):
         print(f'❌ 原图 XML 目录不可用: {original_dir}')
@@ -1770,6 +1919,8 @@ def cmd_build_changeset(args) -> int:
     print('人工决策 -> 补充变更集')
     print('=' * 72)
     print(f'  决策总数    : {len(decisions)}')
+    if dropped:
+        print(f'  已忽略      : {dropped} 条（编号不在当前队列里）')
     print(f'  采纳        : {stats["accepted"]}')
     print(f'  驳回        : {stats["rejected"]}')
     for action in ('set_name', 'set_bbox', 'set_name_bbox', 'delete', 'add'):
@@ -1846,27 +1997,55 @@ class ReviewHandler(http.server.BaseHTTPRequestHandler):
     def _decisions_path(self) -> Path:
         return Path(self.context.get('decisions') or (self.review_dir / 'decisions.json'))
 
-    def _load_decisions(self) -> dict:
+    def _read_decisions_file(self) -> dict:
         path = self._decisions_path()
-        if not path.exists():
+        if not path.is_file():
             return {}
         try:
             raw = json.loads(path.read_text(encoding='utf-8'))
-            return raw.get('decisions', raw) or {}
         except Exception as exc:
             print(f'[审核服务] 读取决策文件失败: {exc}')
             return {}
+        return raw if isinstance(raw, dict) else {}
 
-    def _save_decisions(self, decisions: dict) -> None:
+    def _file_matches_queue(self, raw: dict) -> bool:
+        expected = self.context.get('queue_id')
+        return bool(expected) and isinstance(raw, dict) and raw.get('queue_id') == expected
+
+    def _load_decisions(self) -> dict:
+        raw = self._read_decisions_file()
+        if not self._file_matches_queue(raw):
+            return {}
+        return filter_decisions(raw.get('decisions') or {},
+                                self.context.get('item_ids') or [])
+
+    def _require_same_queue(self, payload: dict) -> None:
+        expected = self.context.get('queue_id')
+        if not expected or payload.get('queue_id') != expected:
+            raise ValueError('队列标识不匹配，未保存。请重新渲染审核页面后再操作')
+        if not self.context.get('item_ids'):
+            raise ValueError('审核元数据缺少本次队列的条目编号，拒绝写入')
+
+    def _save_decisions(self, decisions: dict) -> dict:
+        expected = self.context.get('queue_id')
+        item_ids = self.context.get('item_ids') or []
+        if not expected or not item_ids:
+            raise ValueError('审核元数据缺少本次队列标识，拒绝保存。请重新运行 render')
+        if not isinstance(decisions, dict):
+            raise ValueError('decisions 必须是对象')
+        decisions = filter_decisions(decisions, item_ids)
         path = self._decisions_path()
         path.parent.mkdir(parents=True, exist_ok=True)
+        # 上一批或未绑定的决策先改名留档，再写这一批，避免编号撞车后被覆盖丢档
+        archive_foreign_decisions(path, expected)
         payload = {'dataset': self.context.get('dataset'),
+                   'queue_id': expected,
                    'saved_at': mc.now_iso(),
                    'decisions': decisions}
-        # 原子写，避免边写边崩把决策弄丢
         tmp = path.with_suffix('.json.tmp')
         tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding='utf-8')
         os.replace(str(tmp), str(path))
+        return decisions
 
     def _safe_path(self, url_path: str) -> Optional[Path]:
         """把 URL 映射到 review_dir 下的文件，杜绝路径穿越"""
@@ -1895,11 +2074,24 @@ class ReviewHandler(http.server.BaseHTTPRequestHandler):
                 'original_xml_dir_exists': self.original_dir_ok,
                 'supplement_output': self.context.get('supplement_output'),
                 'decisions_file': str(self._decisions_path()),
+                'queue_id': self.context.get('queue_id') or '',
             })
             return
 
         if path == '/api/decisions':
-            self._send_json({'ok': True, 'decisions': self._load_decisions()})
+            raw = self._read_decisions_file()
+            matched = self._file_matches_queue(raw)
+            decisions = (filter_decisions(raw.get('decisions') or {},
+                                          self.context.get('item_ids') or [])
+                         if matched else {})
+            foreign = (isinstance(raw.get('decisions'), dict)
+                       and bool(raw.get('decisions')) and not matched)
+            self._send_json({
+                'ok': True,
+                'queue_id': self.context.get('queue_id') or '',
+                'decisions': decisions,
+                'ignored_other_queue': foreign,
+            })
             return
 
         target = self._safe_path(path)
@@ -1934,10 +2126,13 @@ class ReviewHandler(http.server.BaseHTTPRequestHandler):
             return
 
         if path == '/api/decisions':
-            decisions = payload.get('decisions', {})
             try:
-                self._save_decisions(decisions)
-                self._send_json({'ok': True, 'count': len(decisions)})
+                self._require_same_queue(payload)
+                saved = self._save_decisions(payload.get('decisions'))
+                self._send_json({'ok': True, 'count': len(saved),
+                                 'queue_id': self.context.get('queue_id')})
+            except ValueError as exc:
+                self._send_json({'ok': False, 'error': str(exc)}, status=409)
             except Exception as exc:
                 self._send_json({'ok': False, 'error': str(exc)}, status=500)
             return
@@ -1950,11 +2145,12 @@ class ReviewHandler(http.server.BaseHTTPRequestHandler):
 
     def _handle_build_changeset(self, payload: dict):
         try:
+            self._require_same_queue(payload)
             decisions = payload.get('decisions')
             if decisions is None:
                 decisions = self._load_decisions()
             else:
-                self._save_decisions(decisions)
+                decisions = self._save_decisions(decisions)
 
             review_queue = self.context.get('review_queue')
             original_dir = self.context.get('original_xml_dir')
@@ -2060,8 +2256,11 @@ def serve_review(review_dir: str, host: str = '127.0.0.1', port: int = 8770,
     print(f'  地址        : {url}')
     print(f'  审核目录    : {review_path}')
     print(f'  数据集      : {context.get("dataset")}')
+    print(f'  队列标识    : {context.get("queue_id") or "（没有，请重新 render）"}')
     print(f'  决策保存到  : {context.get("decisions") or review_path / "decisions.json"}')
     print(f'  原图 XML    : {context.get("original_xml_dir")}')
+    if not context.get('queue_id') or not context.get('item_ids'):
+        print('  ⚠️  review_meta.json 没有本次队列标识，决策无法按队列隔开。请重新运行 render。')
     print('-' * 72)
     print('  远程连 Linux 时：Cursor / VSCode 会自动把这个端口转发到你的 Windows，')
     print(f'  直接在 Windows 浏览器里打开 {url} 即可。')

@@ -15,8 +15,8 @@
 
 用法：
   # 预演（推荐先跑）
-  python 2_应用变更集.py --changeset /raid/wtj/甘肃新增训练集/gd_data/映射原图/changeset.json
-  python 2_应用变更集.py --changeset /raid/wtj/甘肃新增训练集/gd_data/映射原图/supplement_changeset.json
+  python 2_应用变更集.py --changeset /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/all_datasets/gd_data/映射原图/changeset.json
+  python 2_应用变更集.py --changeset /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/all_datasets/gd_data/映射原图/supplement_changeset.json
 
   # 真正写入
   python 2_应用变更集.py --changeset /raid/wtj/甘肃新增训练集/gd_data/映射原图/changeset.json --apply
