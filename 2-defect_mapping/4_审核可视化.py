@@ -19,16 +19,19 @@
   # 渲染完直接起服务（远程审核推荐一步到位）
     #   --original-images ，如果json里的原图路径失效，增加该参数，指定原图路径
   python 4_审核可视化.py render \
-    --review-queue /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/all_datasets/gd_data/映射原图/review_queue.json \
-    --dataset-dir /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/all_datasets/gd_data \
-    --output /raid/Nas-123/原始巡检数据库/输电项目_新增训练集/第二批测试集/all_datasets/gd_data/映射原图 --serve
+    --review-queue /raid/datasets_defect_2026/datasets_train/全量_正样本/gd_data/映射回总库2061118/review_queue.json \
+    --dataset-dir /raid/datasets_defect_2026/datasets_train/全量_正样本/gd_data \
+    --output /raid/datasets_defect_2026/datasets_train/全量_正样本/gd_data/映射回总库2061118 \
+    --host 0.0.0.0 \
+    --port 8770 \
+    --serve
 
   原图分散在多个目录时不用搬图：crop_mapping 里的 original_img_path
   指向的文件还在，就直接打开。路径已失效时，仍用 --original-images 兜底。
 
 
   # 之后想重新打开审核页面
-  python 4_审核可视化.py serve --review-dir /raid/datasets_defect_2026/datasets_val/全量_正样本/gd_data/映射原图过程
+  python 4_审核可视化.py serve --review-dir /raid/datasets_defect_2026/datasets_train/全量_正样本/gd_data/映射回总库2061118
 
 
   # 命令行方式回灌决策（等价于网页上点「生成补充变更集」）
